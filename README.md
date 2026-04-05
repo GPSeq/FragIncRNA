@@ -16,6 +16,16 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+If sdsl-lite is causing any errors from seqan3 build, use: 
+
+```bash
+git clone https://github.com/xxsds/sdsl-lite.git
+cd sdsl-lite
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/.local
+cmake --build build -j
+cmake --install build
+```
+
 This produces the executable `build/lncrna_mers`.
 
 ## Run
