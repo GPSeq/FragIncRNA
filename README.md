@@ -83,11 +83,14 @@ The TOML file uses these argument names:
 Combined mode writes a TSV with these columns per reference:
 
 - `*_count`: total IBF hits across bins for the query/reference pair
-- `*_unique_kmers`: number of distinct matching k-mers
+- `*_ibf_unique_kmers`: number of distinct IBF-unique k-mers
 - `*_pass`: `1` if `count >= hit_threshold`, else `0`
 - `*_pct`: `count / number_of_query_kmers`
 
-Unique matching k-mers are also written under `unique_mers/<reference>.tsv`.
+IBF-unique k-mers are also written under `unique_mers/<reference>.tsv`, with
+`query_index` in the first column using the 0-based order from the query FASTA file.
+Here, "IBF-unique" means the query k-mer has IBF count exactly `1` for that reference,
+so it is present in exactly one indexed reference bin/fragment.
 
 ## Tests
 

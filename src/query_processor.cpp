@@ -41,7 +41,7 @@ std::vector<std::string> collect_unique_matching_kmers(auto const & seq,
 
     for (std::size_t i = 0; i < counts.size(); ++i)
     {
-        if (counts[i] == 0)
+        if (counts[i] != 1)
             continue;
 
         std::string kmer = sequence_kmer_to_string(seq, i, kmer_size);
@@ -83,7 +83,7 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
     if (!unique_out)
         throw std::runtime_error("Failed to open unique k-mer output file: " + unique_path.string());
 
-    unique_out << "lncrna\tunique_kmer\n";
+    unique_out << "query_index\tibf_unique_kmer\n";
 
     std::size_t total_queries = results.size();
 
@@ -129,15 +129,14 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
                                         pass,
                                         pct};
 
-        std::string qid = record.id();
         if (unique_kmers.empty())
         {
-            unique_out << qid << '\t' << '\n';
+            unique_out << q << '\t' << '\n';
         }
         else
         {
             for (auto const & kmer : unique_kmers)
-                unique_out << qid << '\t' << kmer << '\n';
+                unique_out << q << '\t' << kmer << '\n';
         }
 
         // progress
@@ -188,12 +187,12 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
     // header
     out << "query"
         << '\t' << ref_name_ << "_count"
-        << '\t' << ref_name_ << "_unique_kmers"
+        << '\t' << ref_name_ << "_ibf_unique_kmers"
         << '\t' << ref_name_ << "_pass"
         << '\t' << ref_name_ << "_pct"
         << '\n';
 
-    unique_out << "lncrna\tunique_kmer\n";
+    unique_out << "query_index\tibf_unique_kmer\n";
 
     seqan3::sequence_file_input query_in{cfg_.query_file};
 
@@ -237,12 +236,12 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
 
         if (unique_kmers.empty())
         {
-            unique_out << qid << '\t' << '\n';
+            unique_out << q << '\t' << '\n';
         }
         else
         {
             for (auto const & kmer : unique_kmers)
-                unique_out << qid << '\t' << kmer << '\n';
+                unique_out << q << '\t' << kmer << '\n';
         }
 
         // progress

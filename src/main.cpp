@@ -203,7 +203,7 @@ int main(int argc, char ** argv)
             for (std::size_t r = 0; r < ref_ids.size(); ++r)
             {
                 out << '\t' << ref_ids[r] << "_count"
-                    << '\t' << ref_ids[r] << "_unique_kmers"
+                    << '\t' << ref_ids[r] << "_ibf_unique_kmers"
                     << '\t' << ref_ids[r] << "_pass"
                     << '\t' << ref_ids[r] << "_pct";
             }
