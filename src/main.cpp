@@ -95,14 +95,13 @@ int main(int argc, char ** argv)
                      " reference files to index.");
         Logger::info("Using " + std::to_string(cfg.threads) + " worker thread(s).");
 
-        // Pre-scan queries to get IDs and count (for combined mode)
-        std::vector<std::string> query_ids;
+        // Pre-scan queries to count them (for combined mode)
+        std::size_t total_queries = 0;
         {
             seqan3::sequence_file_input query_in{cfg.query_file};
             for (auto & rec : query_in)
-                query_ids.emplace_back(rec.id());
+                ++total_queries;
         }
-        std::size_t total_queries = query_ids.size();
         if (total_queries == 0)
             throw std::runtime_error("No queries found in file: " + cfg.query_file.string());
 
@@ -199,11 +198,11 @@ int main(int argc, char ** argv)
                 throw std::runtime_error("Failed to open result output file: " + out_path.string());
 
             // header
-            out << "query";
+            out << "query_index";
             for (std::size_t r = 0; r < ref_ids.size(); ++r)
             {
                 out << '\t' << ref_ids[r] << "_count"
-                    << '\t' << ref_ids[r] << "_ibf_unique_kmers"
+                    << '\t' << ref_ids[r] << "_ibf_unique_kmer"
                     << '\t' << ref_ids[r] << "_pass"
                     << '\t' << ref_ids[r] << "_pct";
             }
@@ -212,12 +211,12 @@ int main(int argc, char ** argv)
             // rows
             for (std::size_t q = 0; q < total_queries; ++q)
             {
-                out << query_ids[q];
+                out << q;
                 for (std::size_t r = 0; r < ref_ids.size(); ++r)
                 {
                     auto const & rr = results[q][r];
                     out << '\t' << rr.count
-                        << '\t' << rr.unique_kmers
+                        << '\t' << rr.ibf_unique_kmers
                         << '\t' << (rr.pass ? 1 : 0)
                         << '\t' << std::fixed << std::setprecision(4) << rr.pct;
                 }
