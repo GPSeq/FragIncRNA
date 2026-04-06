@@ -1,0 +1,18 @@
+ref_dir = "/path/to/references"
+query_file = "/path/to/queries.fa"
+
+output_dir = "./ibf_results"
+output_file = "results.tsv"
+log_file = "ibf_run.log"
+
+fragment_size = 8000
+kmer_size = 15
+hash_functions = 3
+fpr = 0.01
+hit_threshold = 13
+threads = 8
+
+store_fragments = false
+store_ibf = true
+cleanup_ibf = true
+single_results_writer = true

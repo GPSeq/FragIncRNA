@@ -7,7 +7,9 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <future>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -15,7 +17,6 @@
 #include <thread>
 #include <vector>
 
-#include <seqan3/argument_parser/all.hpp>
 #include <seqan3/io/sequence_file/input.hpp>
 
 namespace fs = std::filesystem;
@@ -36,104 +37,31 @@ static bool is_fasta_like(fs::path const & p)
 
 int main(int argc, char ** argv)
 {
-    Config cfg;
+    fs::path config_path = "config.toml";
 
     try
     {
-        seqan3::argument_parser parser{"lncrna_mers", argc, argv};
+        if (argc > 2)
+            throw std::runtime_error("Usage: ./lncrna_mers [config.toml]");
 
-        parser.info.short_description = "Per-reference IBF-based k-mer matcher for lncRNAs using SeqAn3.";
-        parser.info.version = "0.1";
-
-        parser.add_option(cfg.ref_dir,
-                          'r', "ref-dir",
-                          "Directory containing reference FASTA / FASTA.gz files.",
-                          seqan3::option_spec::required);
-
-        parser.add_option(cfg.query_file,
-                          'q', "query-file",
-                          "Query sequences in FASTA format.",
-                          seqan3::option_spec::required);
-
-        parser.add_option(cfg.fragment_size,
-                  'f', "fragment-size",
-                  "Fragment size used to split each reference (> 3).",
-                  seqan3::option_spec::standard,
-                  seqan3::arithmetic_range_validator<std::size_t>{4, std::numeric_limits<std::size_t>::max()});
-
-        parser.add_option(cfg.kmer_size,
-                  'k', "kmer-size",
-                  "k-mer size for IBF construction and querying (default 14).",
-                  seqan3::option_spec::standard,
-                  seqan3::arithmetic_range_validator<std::size_t>{1, 32});
-
-        parser.add_option(cfg.hash_functions,
-                  'H', "hash-functions",
-                  "Number of hash functions used in IBFs (default 3).",
-                  seqan3::option_spec::standard,
-                  seqan3::arithmetic_range_validator<std::size_t>{1, 32});
-
-        parser.add_option(cfg.fpr,
-                  'p', "fpr",
-                  "Target false positive rate per IBF bin (default 0.01).",
-                  seqan3::option_spec::standard,
-                  seqan3::arithmetic_range_validator<double>{1e-9, 0.5});
-
-        parser.add_option(cfg.hit_threshold,
-                  't', "hit-threshold",
-                  "Absolute k-mer hit threshold per (query, reference).",
-                  seqan3::option_spec::standard,
-                  seqan3::arithmetic_range_validator<std::uint64_t>{0, std::numeric_limits<std::uint64_t>::max()});
-
-        parser.add_option(cfg.threads,
-                  'j', "threads",
-                  "Number of references to process in parallel (default: hardware concurrency).",
-                  seqan3::option_spec::standard,
-                  seqan3::arithmetic_range_validator<std::size_t>{1, std::numeric_limits<std::size_t>::max()});
-
-        parser.add_option(cfg.output_dir,
-                          'O', "output-dir",
-                          "Directory for all outputs (results, logs, IBFs, fragments).");
-
-        parser.add_option(cfg.output_file,
-                          '\0', "output-file",
-                          "Result output file name (TSV) in combined mode.");
-
-        parser.add_option(cfg.log_file,
-                          '\0', "log-file",
-                          "Log file name.");
-
-        parser.add_flag(cfg.store_fragments,
-                        '\0', "store-fragments",
-                        "Store per-reference fragments as FASTA.");
-
-        parser.add_flag(cfg.store_ibf,
-                        '\0', "store-ibf",
-                        "Store per-reference IBF indices as binary files.");
-
-        parser.add_flag(cfg.cleanup_ibf,
-                        '\0', "cleanup-ibf",
-                        "Delete per-reference IBF files after query processing.");
-
-        parser.add_option(cfg.single_results_writer,
-                          '\0', "single-results-writer",
-                          "true = one combined TSV; false = one results_<ref>.tsv per reference.",
-                          seqan3::option_spec::standard);
-
-        parser.parse();
+        if (argc == 2)
+            config_path = argv[1];
     }
-    catch (seqan3::argument_parser_error const & ext)
+    catch (std::exception const & ext)
     {
-        std::cerr << "Argument parser error: " << ext.what() << '\n';
+        std::cerr << ext.what() << '\n';
         return 1;
     }
 
+    Config cfg;
     try
     {
+        cfg = load_config_from_toml(config_path);
         fs::create_directories(cfg.output_dir);
         auto log_path = cfg.output_dir / cfg.log_file;
         Logger::init(log_path.string());
         Logger::info("Starting lncrna_mers.");
+        Logger::info("Loaded config from: " + config_path.string());
 
         if (!fs::exists(cfg.ref_dir) || !fs::is_directory(cfg.ref_dir))
             throw std::runtime_error("Reference directory does not exist or is not a directory: " +
@@ -167,14 +95,13 @@ int main(int argc, char ** argv)
                      " reference files to index.");
         Logger::info("Using " + std::to_string(cfg.threads) + " worker thread(s).");
 
-        // Pre-scan queries to get IDs and count (for combined mode)
-        std::vector<std::string> query_ids;
+        // Pre-scan queries to count them (for combined mode)
+        std::size_t total_queries = 0;
         {
             seqan3::sequence_file_input query_in{cfg.query_file};
             for (auto & rec : query_in)
-                query_ids.emplace_back(rec.id());
+                ++total_queries;
         }
-        std::size_t total_queries = query_ids.size();
         if (total_queries == 0)
             throw std::runtime_error("No queries found in file: " + cfg.query_file.string());
 
@@ -271,11 +198,11 @@ int main(int argc, char ** argv)
                 throw std::runtime_error("Failed to open result output file: " + out_path.string());
 
             // header
-            out << "query";
+            out << "query_index";
             for (std::size_t r = 0; r < ref_ids.size(); ++r)
             {
                 out << '\t' << ref_ids[r] << "_count"
-                    << '\t' << ref_ids[r] << "_unique_kmers"
+                    << '\t' << ref_ids[r] << "_ibf_unique_kmer"
                     << '\t' << ref_ids[r] << "_pass"
                     << '\t' << ref_ids[r] << "_pct";
             }
@@ -284,12 +211,12 @@ int main(int argc, char ** argv)
             // rows
             for (std::size_t q = 0; q < total_queries; ++q)
             {
-                out << query_ids[q];
+                out << q;
                 for (std::size_t r = 0; r < ref_ids.size(); ++r)
                 {
                     auto const & rr = results[q][r];
                     out << '\t' << rr.count
-                        << '\t' << rr.unique_kmers
+                        << '\t' << rr.ibf_unique_kmers
                         << '\t' << (rr.pass ? 1 : 0)
                         << '\t' << std::fixed << std::setprecision(4) << rr.pct;
                 }

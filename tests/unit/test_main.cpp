@@ -48,6 +48,15 @@ void write_fasta(fs::path const & path,
     out << '>' << id << '\n' << sequence << '\n';
 }
 
+void write_text(fs::path const & path, std::string const & text)
+{
+    std::ofstream out(path);
+    if (!out)
+        throw std::runtime_error("Failed to create text file: " + path.string());
+
+    out << text;
+}
+
 void expect(bool condition, std::string const & message)
 {
     if (!condition)
@@ -167,6 +176,69 @@ void test_ibf_index_reports_fragment_count_as_bin_count()
     expect(index.bin_count() == fragments.size(), "unexpected IBF bin count");
 }
 
+void test_config_loader_reads_flat_toml()
+{
+    auto temp_dir = make_temp_dir("lncrna_mers_test_config_ok");
+    auto config_path = temp_dir / "config.toml";
+
+    write_text(config_path,
+               "ref_dir = \"/refs\"\n"
+               "query_file = \"/queries.fa\"\n"
+               "fragment_size = 8000\n"
+               "kmer_size = 15\n"
+               "hash_functions = 3\n"
+               "fpr = 0.01\n"
+               "hit_threshold = 13\n"
+               "threads = 8\n"
+               "output_dir = \"./out\"\n"
+               "output_file = \"results.tsv\"\n"
+               "log_file = \"run.log\"\n"
+               "store_fragments = false\n"
+               "store_ibf = true\n"
+               "cleanup_ibf = true\n"
+               "single_results_writer = true\n");
+
+    auto cfg = load_config_from_toml(config_path);
+
+    expect(cfg.ref_dir == "/refs", "unexpected ref_dir");
+    expect(cfg.query_file == "/queries.fa", "unexpected query_file");
+    expect(cfg.fragment_size == 8000, "unexpected fragment_size");
+    expect(cfg.kmer_size == 15, "unexpected kmer_size");
+    expect(cfg.hash_functions == 3, "unexpected hash_functions");
+    expect(cfg.fpr == 0.01, "unexpected fpr");
+    expect(cfg.hit_threshold == 13, "unexpected hit_threshold");
+    expect(cfg.threads == 8, "unexpected threads");
+    expect(cfg.output_dir == "./out", "unexpected output_dir");
+    expect(cfg.output_file == "results.tsv", "unexpected output_file");
+    expect(cfg.log_file == "run.log", "unexpected log_file");
+    expect(cfg.store_fragments == false, "unexpected store_fragments");
+    expect(cfg.store_ibf == true, "unexpected store_ibf");
+    expect(cfg.cleanup_ibf == true, "unexpected cleanup_ibf");
+    expect(cfg.single_results_writer == true, "unexpected single_results_writer");
+}
+
+void test_config_loader_rejects_missing_required_key()
+{
+    auto temp_dir = make_temp_dir("lncrna_mers_test_config_missing");
+    auto config_path = temp_dir / "config.toml";
+
+    write_text(config_path,
+               "query_file = \"/queries.fa\"\n"
+               "fragment_size = 8000\n");
+
+    bool threw = false;
+    try
+    {
+        (void) load_config_from_toml(config_path);
+    }
+    catch (std::runtime_error const & ex)
+    {
+        threw = std::string{ex.what()}.find("ref_dir") != std::string::npos;
+    }
+
+    expect(threw, "expected missing required key error");
+}
+
 } // namespace
 
 int main()
@@ -181,6 +253,8 @@ int main()
         test_fragmenter_rejects_too_small_fragment_size();
         test_ibf_index_rejects_invalid_kmer_size();
         test_ibf_index_reports_fragment_count_as_bin_count();
+        test_config_loader_reads_flat_toml();
+        test_config_loader_rejects_missing_required_key();
     }
     catch (std::exception const & ex)
     {

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 struct Config
 {
@@ -32,3 +33,5 @@ struct Config
 
     std::size_t threads{0};          // 0 = auto-detect, otherwise worker count
 };
+
+Config load_config_from_toml(std::filesystem::path const & config_path);

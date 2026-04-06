@@ -21,6 +21,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(seqan3_fetch_content)
 
 add_library(lncrna_mers_lib
+    src/config.cpp
     src/logger.cpp
     src/fragmenter.cpp
     src/ibf_index.cpp
