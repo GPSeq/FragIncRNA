@@ -1,7 +1,7 @@
 #include "config.hpp"
 #include "fragmenter.hpp"
-#include "ibf_index.hpp"
 #include "logger.hpp"
+#include "reference_index.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -75,11 +75,12 @@ void test_fragmenter_returns_overlapping_fragments()
     Fragmenter fragmenter{cfg};
     auto fragments = fragmenter.fragment_reference(fasta, "ref1");
 
-    expect(fragments.size() == 4, "expected 4 fragments");
+    expect(fragments.size() == 5, "expected 5 fragments");
     expect(to_string(fragments[0]) == "ACGTA", "unexpected fragment 0");
     expect(to_string(fragments[1]) == "GTACG", "unexpected fragment 1");
-    expect(to_string(fragments[2]) == "CGTAA", "unexpected fragment 2");
-    expect(to_string(fragments[3]) == "AA", "unexpected fragment 3");
+    expect(to_string(fragments[2]) == "ACGTA", "unexpected fragment 2");
+    expect(to_string(fragments[3]) == "GTAA", "unexpected fragment 3");
+    expect(to_string(fragments[4]) == "AA", "unexpected fragment 4");
 }
 
 void test_fragmenter_writes_fragment_fasta_when_enabled()
@@ -99,15 +100,15 @@ void test_fragmenter_writes_fragment_fasta_when_enabled()
 
     auto fragment_file = out_dir / "ref2_fragments.fasta";
     expect(fs::exists(fragment_file), "fragment FASTA was not created");
-    expect(fragments.size() == 5, "expected 5 stored fragments");
+    expect(fragments.size() == 8, "expected 8 stored fragments");
 
     std::ifstream in(fragment_file);
     std::string contents((std::istreambuf_iterator<char>(in)),
                          std::istreambuf_iterator<char>());
 
-    expect(contents.find(">ref2_frag0") != std::string::npos, "missing first fragment ID");
+    expect(contents.find("> ref2_frag0") != std::string::npos, "missing first fragment ID");
     expect(contents.find("AACC") != std::string::npos, "missing first fragment sequence");
-    expect(contents.find(">ref2_frag4") != std::string::npos, "missing last fragment ID");
+    expect(contents.find("> ref2_frag7") != std::string::npos, "missing last fragment ID");
 }
 
 void test_fragmenter_rejects_too_small_fragment_size()
@@ -134,19 +135,19 @@ void test_fragmenter_rejects_too_small_fragment_size()
     expect(threw, "expected fragment_size validation error");
 }
 
-void test_ibf_index_rejects_invalid_kmer_size()
+void test_reference_index_rejects_invalid_kmer_size()
 {
     Config cfg;
     cfg.kmer_size = 6;
-    cfg.hash_functions = 2;
-    cfg.fpr = 0.01;
+    cfg.ibf.hash_functions = 2;
+    cfg.ibf.fpr = 0.01;
 
     std::vector<seqan3::dna5_vector> fragments{seqan3::dna5_vector{"ACGT"_dna5}};
 
     bool threw = false;
     try
     {
-        (void) IBFIndex{"ref4", fragments, cfg};
+        (void) ReferenceIndex{"ref4", fragments, cfg};
     }
     catch (std::runtime_error const & ex)
     {
@@ -156,14 +157,14 @@ void test_ibf_index_rejects_invalid_kmer_size()
     expect(threw, "expected kmer_size validation error");
 }
 
-void test_ibf_index_reports_fragment_count_as_bin_count()
+void test_reference_index_reports_fragment_count_as_bin_count()
 {
     auto temp_dir = make_temp_dir("lncrna_mers_test_ibf");
 
     Config cfg;
     cfg.kmer_size = 3;
-    cfg.hash_functions = 2;
-    cfg.fpr = 0.01;
+    cfg.ibf.hash_functions = 2;
+    cfg.ibf.fpr = 0.01;
     cfg.output_dir = temp_dir;
 
     std::vector<seqan3::dna5_vector> fragments{
@@ -172,49 +173,65 @@ void test_ibf_index_reports_fragment_count_as_bin_count()
         seqan3::dna5_vector{"GTACC"_dna5}
     };
 
-    IBFIndex index{"ref5", fragments, cfg};
+    ReferenceIndex index{"ref5", fragments, cfg};
     expect(index.bin_count() == fragments.size(), "unexpected IBF bin count");
 }
 
-void test_config_loader_reads_flat_toml()
+void test_config_loader_reads_sectioned_toml()
 {
     auto temp_dir = make_temp_dir("lncrna_mers_test_config_ok");
     auto config_path = temp_dir / "config.toml";
 
     write_text(config_path,
+               "[general]\n"
+               "index_method = \"hibf\"\n"
                "ref_dir = \"/refs\"\n"
                "query_file = \"/queries.fa\"\n"
                "fragment_size = 8000\n"
                "kmer_size = 15\n"
-               "hash_functions = 3\n"
-               "fpr = 0.01\n"
                "hit_threshold = 13\n"
                "threads = 8\n"
                "output_dir = \"./out\"\n"
                "output_file = \"results.tsv\"\n"
                "log_file = \"run.log\"\n"
                "store_fragments = false\n"
-               "store_ibf = true\n"
-               "cleanup_ibf = true\n"
-               "single_results_writer = true\n");
+               "store_index = true\n"
+               "cleanup_index = true\n"
+               "single_results_writer = true\n"
+               "\n"
+               "[ibf]\n"
+               "hash_functions = 3\n"
+               "fpr = 0.01\n"
+               "\n"
+               "[hibf]\n"
+               "hash_functions = 2\n"
+               "maximum_fpr = 0.05\n"
+               "relaxed_fpr = 0.30\n"
+               "threads = 4\n"
+               "sketch_bits = 12\n");
 
     auto cfg = load_config_from_toml(config_path);
 
     expect(cfg.ref_dir == "/refs", "unexpected ref_dir");
     expect(cfg.query_file == "/queries.fa", "unexpected query_file");
+    expect(cfg.index_method == IndexMethod::hibf, "unexpected index method");
     expect(cfg.fragment_size == 8000, "unexpected fragment_size");
     expect(cfg.kmer_size == 15, "unexpected kmer_size");
-    expect(cfg.hash_functions == 3, "unexpected hash_functions");
-    expect(cfg.fpr == 0.01, "unexpected fpr");
     expect(cfg.hit_threshold == 13, "unexpected hit_threshold");
     expect(cfg.threads == 8, "unexpected threads");
     expect(cfg.output_dir == "./out", "unexpected output_dir");
     expect(cfg.output_file == "results.tsv", "unexpected output_file");
     expect(cfg.log_file == "run.log", "unexpected log_file");
     expect(cfg.store_fragments == false, "unexpected store_fragments");
-    expect(cfg.store_ibf == true, "unexpected store_ibf");
-    expect(cfg.cleanup_ibf == true, "unexpected cleanup_ibf");
+    expect(cfg.store_index == true, "unexpected store_index");
+    expect(cfg.cleanup_index == true, "unexpected cleanup_index");
     expect(cfg.single_results_writer == true, "unexpected single_results_writer");
+    expect(cfg.ibf.hash_functions == 3, "unexpected ibf.hash_functions");
+    expect(cfg.ibf.fpr == 0.01, "unexpected ibf.fpr");
+    expect(cfg.hibf.hash_functions == 2, "unexpected hibf.hash_functions");
+    expect(cfg.hibf.maximum_fpr == 0.05, "unexpected hibf.maximum_fpr");
+    expect(cfg.hibf.relaxed_fpr == 0.30, "unexpected hibf.relaxed_fpr");
+    expect(cfg.hibf.threads == 4, "unexpected hibf.threads");
 }
 
 void test_config_loader_rejects_missing_required_key()
@@ -251,9 +268,9 @@ int main()
         test_fragmenter_returns_overlapping_fragments();
         test_fragmenter_writes_fragment_fasta_when_enabled();
         test_fragmenter_rejects_too_small_fragment_size();
-        test_ibf_index_rejects_invalid_kmer_size();
-        test_ibf_index_reports_fragment_count_as_bin_count();
-        test_config_loader_reads_flat_toml();
+        test_reference_index_rejects_invalid_kmer_size();
+        test_reference_index_reports_fragment_count_as_bin_count();
+        test_config_loader_reads_sectioned_toml();
         test_config_loader_rejects_missing_required_key();
     }
     catch (std::exception const & ex)

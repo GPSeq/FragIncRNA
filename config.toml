@@ -1,18 +1,36 @@
-ref_dir = "/path/to/references"
-query_file = "/path/to/queries.fa"
+[general]
+index_method = "hibf"
 
-output_dir = "./ibf_results"
+ref_dir = "/mnt/d/primates_bmc/genomes/"
+query_file = "/mnt/d/primates_bmc/lncrna/gencode.v49.lncRNA_transcripts.fa"
+
+output_dir = "/mnt/d/primates_bmc/output_kmers"
 output_file = "results.tsv"
 log_file = "ibf_run.log"
 
 fragment_size = 8000
 kmer_size = 15
-hash_functions = 3
-fpr = 0.01
 hit_threshold = 13
-threads = 8
+threads = 1
 
 store_fragments = false
-store_ibf = true
-cleanup_ibf = true
-single_results_writer = true
+store_index = false
+cleanup_index = false
+single_results_writer = false
+
+[ibf]
+hash_functions = 3
+fpr = 0.01
+
+[hibf]
+hash_functions = 3
+maximum_fpr = 0.01
+relaxed_fpr = 0.5
+threads = 8
+sketch_bits = 12
+tmax = 0
+empty_bin_fraction = 0.0
+alpha = 1.2
+max_rearrangement_ratio = 0.5
+disable_estimate_union = false
+disable_rearrangement = false

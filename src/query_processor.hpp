@@ -1,7 +1,7 @@
 #pragma once
 
 #include "config.hpp"
-#include "ibf_index.hpp"
+#include "reference_index.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -18,7 +18,7 @@ class QueryProcessor
 {
 public:
     QueryProcessor(Config const & cfg,
-                   IBFIndex & index,
+                   ReferenceIndex & index,
                    std::string const & ref_name);
 
     // For combined mode: fill one reference column in the results matrix.
@@ -31,6 +31,6 @@ public:
 
 private:
     Config      cfg_;
-    IBFIndex  & index_;
+    ReferenceIndex & index_;
     std::string ref_name_;
 };

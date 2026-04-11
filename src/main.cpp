@@ -1,8 +1,8 @@
 #include "config.hpp"
 #include "fragmenter.hpp"
-#include "ibf_index.hpp"
 #include "logger.hpp"
 #include "query_processor.hpp"
+#include "reference_index.hpp"
 
 #include <deque>
 #include <exception>
@@ -70,9 +70,6 @@ int main(int argc, char ** argv)
         if (cfg.kmer_size > cfg.fragment_size)
             throw std::runtime_error("kmer-size must be <= fragment-size.");
 
-        if (cfg.fpr <= 0.0 || cfg.fpr >= 1.0)
-            throw std::runtime_error("FPR must be in (0,1).");
-
         if (cfg.threads == 0)
             cfg.threads = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
 
@@ -137,9 +134,9 @@ int main(int argc, char ** argv)
             Fragmenter fragmenter{cfg};
             auto fragments = fragmenter.fragment_reference(ref_path, ref_id);
 
-            IBFIndex ibf_idx{ref_id, fragments, cfg};
+            ReferenceIndex ref_index{ref_id, fragments, cfg};
 
-            QueryProcessor qp{cfg, ibf_idx, ref_id};
+            QueryProcessor qp{cfg, ref_index, ref_id};
 
             if (cfg.single_results_writer)
             {
@@ -154,17 +151,25 @@ int main(int argc, char ** argv)
             }
 
             // Delete IBF on disk immediately after use, if requested
-            if (cfg.cleanup_ibf && cfg.store_ibf)
+            if (cfg.store_index)
             {
-                auto ibf_path = cfg.output_dir / (ref_id + ".ibf");
+                auto index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
+                ref_index.store_to(index_path);
+                Logger::info("Stored index for reference '" + ref_id +
+                             "' to file: " + index_path.string());
+            }
+
+            if (cfg.cleanup_index && cfg.store_index)
+            {
+                auto index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
                 std::error_code ec;
-                if (fs::exists(ibf_path, ec))
+                if (fs::exists(index_path, ec))
                 {
-                    fs::remove(ibf_path, ec);
+                    fs::remove(index_path, ec);
                     if (!ec)
-                        Logger::info("Removed IBF file: " + ibf_path.string());
+                        Logger::info("Removed index file: " + index_path.string());
                     else
-                        Logger::warn("Failed to remove IBF file: " + ibf_path.string() +
+                        Logger::warn("Failed to remove index file: " + index_path.string() +
                                      " (" + ec.message() + ")");
                 }
             }

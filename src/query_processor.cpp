@@ -56,7 +56,7 @@ std::vector<std::string> collect_unique_matching_kmers(auto const & seq,
 } // namespace
 
 QueryProcessor::QueryProcessor(Config const & cfg,
-                               IBFIndex & index,
+                               ReferenceIndex & index,
                                std::string const & ref_name)
     : cfg_{cfg}
     , index_{index}
@@ -72,9 +72,6 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
     using clock = std::chrono::steady_clock;
 
     Logger::info("QueryProcessor (combined) for reference '" + ref_name_ + "'.");
-
-    auto & ibf = index_.ibf();
-    auto agent = ibf.counting_agent();
 
     auto unique_dir = cfg_.output_dir / "unique_mers";
     std::filesystem::create_directories(unique_dir);
@@ -102,11 +99,8 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
         std::size_t total_kmers =
             seq.size() >= cfg_.kmer_size ? seq.size() - cfg_.kmer_size + 1 : 0;
 
-        auto hash_view = seq | seqan3::views::kmer_hash(
-                                    seqan3::ungapped{static_cast<uint8_t>(cfg_.kmer_size)});
-
         auto start  = clock::now();
-        auto counts = agent.bulk_count(hash_view);
+        auto counts = index_.count_query_kmer_hits(seq);
         auto stop   = clock::now();
 
         double dt_sec =
@@ -174,9 +168,6 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
     if (!out)
         throw std::runtime_error("Failed to open per-IBF result file: " + out_path.string());
 
-    auto & ibf = index_.ibf();
-    auto agent = ibf.counting_agent();
-
     auto unique_dir = cfg_.output_dir / "unique_mers";
     std::filesystem::create_directories(unique_dir);
 
@@ -207,11 +198,8 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
         std::size_t total_kmers =
             seq.size() >= cfg_.kmer_size ? seq.size() - cfg_.kmer_size + 1 : 0;
 
-        auto hash_view = seq | seqan3::views::kmer_hash(
-                                    seqan3::ungapped{static_cast<uint8_t>(cfg_.kmer_size)});
-
         auto start  = clock::now();
-        auto counts = agent.bulk_count(hash_view);
+        auto counts = index_.count_query_kmer_hits(seq);
         auto stop   = clock::now();
 
         double dt_sec =
