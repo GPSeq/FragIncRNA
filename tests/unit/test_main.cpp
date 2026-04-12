@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include "fragmenter.hpp"
 #include "logger.hpp"
+#include "query_processor.hpp"
 #include "reference_index.hpp"
 
 #include <filesystem>
@@ -61,6 +62,15 @@ void expect(bool condition, std::string const & message)
 {
     if (!condition)
         throw std::runtime_error(message);
+}
+
+std::string read_text(fs::path const & path)
+{
+    std::ifstream in(path);
+    if (!in)
+        throw std::runtime_error("Failed to read file: " + path.string());
+
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
 void test_fragmenter_returns_overlapping_fragments()
@@ -256,6 +266,43 @@ void test_config_loader_rejects_missing_required_key()
     expect(threw, "expected missing required key error");
 }
 
+void test_query_processor_writes_matching_kmer_hit_file()
+{
+    auto temp_dir = make_temp_dir("lncrna_mers_test_query_processor");
+    auto query_fasta = temp_dir / "queries.fa";
+    auto results_path = temp_dir / "results_ref6.tsv";
+
+    write_fasta(query_fasta, "query0", "ACGTAC");
+
+    Config cfg;
+    cfg.query_file = query_fasta;
+    cfg.output_dir = temp_dir;
+    cfg.kmer_size = 3;
+    cfg.hit_threshold = 1;
+    cfg.ibf.hash_functions = 2;
+    cfg.ibf.fpr = 0.01;
+
+    std::vector<seqan3::dna5_vector> fragments{
+        seqan3::dna5_vector{"ACGTA"_dna5},
+        seqan3::dna5_vector{"CGTAC"_dna5}
+    };
+
+    ReferenceIndex index{"ref6", fragments, cfg};
+    QueryProcessor processor{cfg, index, "ref6"};
+    processor.run_write_per_ibf(results_path);
+
+    auto kmer_hits = read_text(temp_dir / "ref6_kmers.tsv");
+    expect(kmer_hits == "query_index\tkmer_indices\tkmer_counts\n"
+                        "0\t1/2/3/4\t1/2/2/1\n",
+           "unexpected k-mer hit file contents");
+
+    auto unique_hits = read_text(temp_dir / "unique_mers" / "ref6.tsv");
+    expect(unique_hits == "query_index\tibf_unique_kmer\n"
+                          "0\tACG\n"
+                          "0\tTAC\n",
+           "unexpected unique k-mer file contents");
+}
+
 } // namespace
 
 int main()
@@ -272,6 +319,7 @@ int main()
         test_reference_index_reports_fragment_count_as_bin_count();
         test_config_loader_reads_sectioned_toml();
         test_config_loader_rejects_missing_required_key();
+        test_query_processor_writes_matching_kmer_hit_file();
     }
     catch (std::exception const & ex)
     {
