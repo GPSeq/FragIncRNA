@@ -91,6 +91,9 @@ Combined mode writes a TSV with these columns per reference:
 
 IBF unique kmers are also written under `unique_mers/<reference>.tsv`, with
 `query_index` in the first column using the 0-based order from the query FASTA file.
+All matching query k-mers are additionally written to `<output_dir>/<reference>_kmers.tsv`
+with three columns: `query_index`, slash-separated 1-based `kmer_indices`, and the
+matching slash-separated `kmer_counts` for those indices.
 The main results TSV also writes `query_index` instead of the full FASTA query name.
 
 ## Tests

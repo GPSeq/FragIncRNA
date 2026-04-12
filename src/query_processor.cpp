@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <unordered_set>
 #include <numeric>
+#include <utility>
 #include <sstream>
 #include <stdexcept>
 #include <chrono>
@@ -53,6 +54,31 @@ std::vector<std::string> collect_unique_matching_kmers(auto const & seq,
     return ibf_unique_kmers;
 }
 
+std::pair<std::string, std::string> encode_matching_kmer_hits(auto const & counts)
+{
+    std::ostringstream indices;
+    std::ostringstream hit_counts;
+    bool first = true;
+
+    for (std::size_t i = 0; i < counts.size(); ++i)
+    {
+        if (counts[i] == 0)
+            continue;
+
+        if (!first)
+        {
+            indices << '/';
+            hit_counts << '/';
+        }
+
+        indices << (i + 1);
+        hit_counts << counts[i];
+        first = false;
+    }
+
+    return {indices.str(), hit_counts.str()};
+}
+
 } // namespace
 
 QueryProcessor::QueryProcessor(Config const & cfg,
@@ -84,7 +110,13 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
     if (!unique_out)
         throw std::runtime_error("Failed to open IBF unique k-mer output file: " + unique_path.string());
 
+    auto kmer_hits_path = cfg_.output_dir / (ref_name_ + "_kmers.tsv");
+    std::ofstream kmer_hits_out(kmer_hits_path);
+    if (!kmer_hits_out)
+        throw std::runtime_error("Failed to open k-mer hit output file: " + kmer_hits_path.string());
+
     unique_out << "query_index\tibf_unique_kmer\n";
+    kmer_hits_out << "query_index\tkmer_indices\tkmer_counts\n";
 
     std::size_t total_queries = results.size();
 
@@ -116,6 +148,7 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
         std::uint64_t match_count =
             std::accumulate(counts.begin(), counts.end(), std::uint64_t{0});
         auto ibf_unique_kmers = collect_unique_matching_kmers(seq, counts, cfg_.kmer_size);
+        auto [matching_kmer_indices, matching_kmer_counts] = encode_matching_kmer_hits(counts);
 
         bool   pass = (match_count >= cfg_.hit_threshold);
         double pct  = (total_kmers > 0)
@@ -140,6 +173,10 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
                 unique_out << q << '\t' << kmer << '\n';
         }
 
+        kmer_hits_out << q << '\t'
+                      << matching_kmer_indices << '\t'
+                      << matching_kmer_counts << '\n';
+
         // progress
         std::ostringstream prog;
         prog << "\r[combined] ref " << (ref_idx + 1)
@@ -159,6 +196,7 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
     Logger::info("Finished combined processing for '" + ref_name_ +
                  "', total IBF time: " + std::to_string(total_ibf_time) + " s.");
     Logger::info("IBF unique k-mer results written to: " + unique_path.string());
+    Logger::info("K-mer hit results written to: " + kmer_hits_path.string());
 }
 
 // -------------------------------------------------------------
@@ -185,6 +223,11 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
     if (!unique_out)
         throw std::runtime_error("Failed to open IBF unique k-mer output file: " + unique_path.string());
 
+    auto kmer_hits_path = cfg_.output_dir / (ref_name_ + "_kmers.tsv");
+    std::ofstream kmer_hits_out(kmer_hits_path);
+    if (!kmer_hits_out)
+        throw std::runtime_error("Failed to open k-mer hit output file: " + kmer_hits_path.string());
+
     // header
     out << "query_index"
         << '\t' << ref_name_ << "_count"
@@ -194,6 +237,7 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
         << '\n';
 
     unique_out << "query_index\tibf_unique_kmer\n";
+    kmer_hits_out << "query_index\tkmer_indices\tkmer_counts\n";
 
     seqan3::sequence_file_input query_in{cfg_.query_file};
 
@@ -221,6 +265,7 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
         std::uint64_t match_count =
             std::accumulate(counts.begin(), counts.end(), std::uint64_t{0});
         auto ibf_unique_kmers = collect_unique_matching_kmers(seq, counts, cfg_.kmer_size);
+        auto [matching_kmer_indices, matching_kmer_counts] = encode_matching_kmer_hits(counts);
 
         bool   pass = (match_count >= cfg_.hit_threshold);
         double pct  = (total_kmers > 0)
@@ -244,6 +289,10 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
                 unique_out << q << '\t' << kmer << '\n';
         }
 
+        kmer_hits_out << q << '\t'
+                      << matching_kmer_indices << '\t'
+                      << matching_kmer_counts << '\n';
+
         // progress
         std::ostringstream prog;
         prog << "\r[per-IBF] ref '" << ref_name_
@@ -259,6 +308,7 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
     Logger::info("Finished per-IBF results for '" + ref_name_ +
                  "', total IBF time: " + std::to_string(total_ibf_time) + " s.");
     Logger::info("IBF unique k-mer results written to: " + unique_path.string());
+    Logger::info("K-mer hit results written to: " + kmer_hits_path.string());
 }
 
 /*
