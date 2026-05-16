@@ -11,6 +11,14 @@
 namespace
 {
 
+/*
+* @fn trim
+* @brief Removes leading and trailing whitespace from a string view.
+* @signature std::string trim(std::string_view text);
+* @param text: text to trim.
+* @throws None.
+* @return Trimmed string.
+*/
 std::string trim(std::string_view text)
 {
     auto const first = text.find_first_not_of(" \t\r\n");
@@ -21,6 +29,14 @@ std::string trim(std::string_view text)
     return std::string{text.substr(first, last - first + 1)};
 }
 
+/*
+* @fn strip_comment
+* @brief Removes TOML comments from a line while preserving hash characters inside quoted strings.
+* @signature std::string strip_comment(std::string_view line);
+* @param line: TOML line to process.
+* @throws None.
+* @return Line content before an unquoted comment marker.
+*/
 std::string strip_comment(std::string_view line)
 {
     bool in_quotes = false;
@@ -37,6 +53,15 @@ std::string strip_comment(std::string_view line)
     return std::string{line};
 }
 
+/*
+* @fn parse_string
+* @brief Parses a TOML double-quoted string value and decodes supported escape sequences.
+* @signature std::string parse_string(std::string const & key, std::string const & value);
+* @param key: configuration key used in error messages.
+* @param value: raw TOML value to parse.
+* @throws std::runtime_error when the value is not a valid supported TOML string.
+* @return Parsed string value.
+*/
 std::string parse_string(std::string const & key, std::string const & value)
 {
     if (value.size() < 2 || value.front() != '"' || value.back() != '"')
@@ -68,6 +93,15 @@ std::string parse_string(std::string const & key, std::string const & value)
     return out;
 }
 
+/*
+* @fn parse_bool
+* @brief Parses a TOML boolean value.
+* @signature bool parse_bool(std::string const & key, std::string const & value);
+* @param key: configuration key used in error messages.
+* @param value: raw TOML value to parse.
+* @throws std::runtime_error when the value is not true or false.
+* @return Parsed boolean value.
+*/
 bool parse_bool(std::string const & key, std::string const & value)
 {
     if (value == "true")
@@ -78,6 +112,15 @@ bool parse_bool(std::string const & key, std::string const & value)
     throw std::runtime_error("Config key '" + key + "' must be true or false.");
 }
 
+/*
+* @fn parse_size_t
+* @brief Parses a non-negative integer into std::size_t.
+* @signature std::size_t parse_size_t(std::string const & key, std::string const & value);
+* @param key: configuration key used in error messages.
+* @param value: raw TOML value to parse.
+* @throws std::runtime_error when the value is not a valid non-negative integer.
+* @return Parsed std::size_t value.
+*/
 std::size_t parse_size_t(std::string const & key, std::string const & value)
 {
     try
@@ -94,6 +137,15 @@ std::size_t parse_size_t(std::string const & key, std::string const & value)
     }
 }
 
+/*
+* @fn parse_u64
+* @brief Parses a non-negative integer into std::uint64_t.
+* @signature std::uint64_t parse_u64(std::string const & key, std::string const & value);
+* @param key: configuration key used in error messages.
+* @param value: raw TOML value to parse.
+* @throws std::runtime_error when the value is not a valid non-negative integer.
+* @return Parsed std::uint64_t value.
+*/
 std::uint64_t parse_u64(std::string const & key, std::string const & value)
 {
     try
@@ -110,6 +162,15 @@ std::uint64_t parse_u64(std::string const & key, std::string const & value)
     }
 }
 
+/*
+* @fn parse_double
+* @brief Parses a floating-point TOML value.
+* @signature double parse_double(std::string const & key, std::string const & value);
+* @param key: configuration key used in error messages.
+* @param value: raw TOML value to parse.
+* @throws std::runtime_error when the value is not a valid floating-point number.
+* @return Parsed double value.
+*/
 double parse_double(std::string const & key, std::string const & value)
 {
     try
@@ -126,6 +187,14 @@ double parse_double(std::string const & key, std::string const & value)
     }
 }
 
+/*
+* @fn parse_index_method
+* @brief Parses the configured index method.
+* @signature IndexMethod parse_index_method(std::string const & value);
+* @param value: parsed TOML string containing the index method name.
+* @throws std::runtime_error when the value is not a supported index method.
+* @return Parsed index method.
+*/
 IndexMethod parse_index_method(std::string const & value)
 {
     if (value == "ibf")
@@ -136,6 +205,15 @@ IndexMethod parse_index_method(std::string const & value)
     throw std::runtime_error("Config key 'general.index_method' must be \"ibf\" or \"hibf\".");
 }
 
+/*
+* @fn validate_config
+* @brief Validates required configuration values and option ranges.
+* @signature void validate_config(Config const & cfg, std::filesystem::path const & config_path);
+* @param cfg: configuration to validate.
+* @param config_path: source configuration path used in error messages.
+* @throws std::runtime_error when any required value is missing or out of range.
+* @return None.
+*/
 void validate_config(Config const & cfg, std::filesystem::path const & config_path)
 {
     if (cfg.ref_dir.empty())
@@ -188,6 +266,14 @@ void validate_config(Config const & cfg, std::filesystem::path const & config_pa
 
 } // namespace
 
+/*
+* @fn load_config_from_toml
+* @brief Loads and validates application configuration from a TOML file.
+* @signature Config load_config_from_toml(std::filesystem::path const & config_path);
+* @param config_path: path to the TOML configuration file.
+* @throws std::runtime_error when the file cannot be opened or contains invalid configuration.
+* @return Parsed and validated configuration.
+*/
 Config load_config_from_toml(std::filesystem::path const & config_path)
 {
     std::ifstream in(config_path);

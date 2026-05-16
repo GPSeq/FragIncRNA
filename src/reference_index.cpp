@@ -22,6 +22,16 @@
 namespace
 {
 
+/*
+* @fn compute_flat_bin_bits
+* @brief Computes the number of bits per IBF bin from fragment length and false-positive settings.
+* @signature std::size_t compute_flat_bin_bits(std::vector<seqan3::dna5_vector> const & fragments, Config const & cfg, std::string const & ref_name);
+* @param fragments: reference fragments used to estimate maximum k-mer count per bin.
+* @param cfg: application configuration containing k-mer and IBF settings.
+* @param ref_name: reference name used in error messages.
+* @throws std::runtime_error when k-mer settings are incompatible with the fragments.
+* @return Number of bits to allocate per IBF bin.
+*/
 std::size_t compute_flat_bin_bits(std::vector<seqan3::dna5_vector> const & fragments, Config const & cfg, std::string const & ref_name)
 {
     std::size_t max_len = 0;
@@ -45,6 +55,16 @@ std::size_t compute_flat_bin_bits(std::vector<seqan3::dna5_vector> const & fragm
     return std::max<std::size_t>(bits, 1024u);
 }
 
+/*
+* @fn count_hits_with_flat_ibf
+* @brief Counts flat IBF bin matches for every k-mer in a query sequence.
+* @signature std::vector<std::size_t> count_hits_with_flat_ibf(seqan3::interleaved_bloom_filter<> const & ibf, seqan3::dna5_vector const & seq, std::size_t const kmer_size);
+* @param ibf: flat interleaved Bloom filter to query.
+* @param seq: query DNA sequence.
+* @param kmer_size: k-mer length used to hash the query sequence.
+* @throws None.
+* @return Per-k-mer bin hit counts.
+*/
 std::vector<std::size_t> count_hits_with_flat_ibf(seqan3::interleaved_bloom_filter<> const & ibf,
                                                   seqan3::dna5_vector const & seq,
                                                   std::size_t const kmer_size)
@@ -69,6 +89,16 @@ std::vector<std::size_t> count_hits_with_flat_ibf(seqan3::interleaved_bloom_filt
 }
 
 #if defined(LNCRNA_MERS_HAS_HIBF)
+/*
+* @fn count_hits_with_hibf
+* @brief Counts HIBF bin matches for every k-mer in a query sequence.
+* @signature std::vector<std::size_t> count_hits_with_hibf(seqan::hibf::hierarchical_interleaved_bloom_filter const & hibf, seqan3::dna5_vector const & seq, std::size_t const kmer_size);
+* @param hibf: hierarchical interleaved Bloom filter to query.
+* @param seq: query DNA sequence.
+* @param kmer_size: k-mer length used to hash the query sequence.
+* @throws None.
+* @return Per-k-mer bin hit counts.
+*/
 std::vector<std::size_t> count_hits_with_hibf(seqan::hibf::hierarchical_interleaved_bloom_filter const & hibf,
                                               seqan3::dna5_vector const & seq,
                                               std::size_t const kmer_size)
@@ -96,6 +126,16 @@ std::vector<std::size_t> count_hits_with_hibf(seqan::hibf::hierarchical_interlea
 
 } // namespace
 
+/*
+* @fn ReferenceIndex
+* @brief Builds an IBF or HIBF index for the fragments of one reference.
+* @signature ReferenceIndex::ReferenceIndex(std::string ref_name, std::vector<seqan3::dna5_vector> const & fragments, Config const & cfg);
+* @param ref_name: reference name associated with the index.
+* @param fragments: DNA fragments to insert into the index.
+* @param cfg: application configuration controlling index type and parameters.
+* @throws std::runtime_error when fragments are empty, k-mer settings are invalid, or HIBF support is unavailable.
+* @return None.
+*/
 ReferenceIndex::ReferenceIndex(std::string ref_name,
                                std::vector<seqan3::dna5_vector> const & fragments,
                                Config const & cfg)
@@ -123,13 +163,37 @@ ReferenceIndex::ReferenceIndex(std::string ref_name,
 #endif
 }
 
+/*
+* @fn ~ReferenceIndex
+* @brief Destroys the reference index and releases owned index storage.
+* @signature ReferenceIndex::~ReferenceIndex();
+* @param None.
+* @throws None.
+* @return None.
+*/
 ReferenceIndex::~ReferenceIndex() = default;
 
+/*
+* @fn bin_count
+* @brief Returns the number of user bins represented by the reference fragments.
+* @signature std::size_t ReferenceIndex::bin_count() const noexcept;
+* @param None.
+* @throws None.
+* @return Number of user bins.
+*/
 std::size_t ReferenceIndex::bin_count() const noexcept
 {
     return user_bin_count_;
 }
 
+/*
+* @fn count_query_kmer_hits
+* @brief Counts how many index bins match each k-mer in a query sequence.
+* @signature std::vector<std::size_t> ReferenceIndex::count_query_kmer_hits(seqan3::dna5_vector const & seq) const;
+* @param seq: query DNA sequence to search against the index.
+* @throws std::runtime_error when HIBF search is requested in a build without HIBF support.
+* @return Per-k-mer hit counts.
+*/
 std::vector<std::size_t> ReferenceIndex::count_query_kmer_hits(seqan3::dna5_vector const & seq) const
 {
     if (cfg_.index_method == IndexMethod::ibf)
@@ -142,11 +206,27 @@ std::vector<std::size_t> ReferenceIndex::count_query_kmer_hits(seqan3::dna5_vect
 #endif
 }
 
+/*
+* @fn index_file_suffix
+* @brief Returns the file suffix used when serializing the selected index type.
+* @signature std::string ReferenceIndex::index_file_suffix() const;
+* @param None.
+* @throws None.
+* @return Index file suffix.
+*/
 std::string ReferenceIndex::index_file_suffix() const
 {
     return cfg_.index_method == IndexMethod::ibf ? ".ibf" : ".hibf";
 }
 
+/*
+* @fn store_to
+* @brief Serializes the selected index to a binary archive file.
+* @signature void ReferenceIndex::store_to(std::filesystem::path const & out_path) const;
+* @param out_path: path to the binary index output file.
+* @throws std::runtime_error when the file cannot be opened or HIBF support is unavailable.
+* @return None.
+*/
 void ReferenceIndex::store_to(std::filesystem::path const & out_path) const
 {
     std::ofstream os(out_path, std::ios::binary);
@@ -166,6 +246,14 @@ void ReferenceIndex::store_to(std::filesystem::path const & out_path) const
 #endif
 }
 
+/*
+* @fn build_ibf
+* @brief Builds a flat interleaved Bloom filter from the reference fragments.
+* @signature void ReferenceIndex::build_ibf(std::vector<seqan3::dna5_vector> const & fragments);
+* @param fragments: DNA fragments to insert into the IBF.
+* @throws std::runtime_error when k-mer settings are invalid.
+* @return None.
+*/
 void ReferenceIndex::build_ibf(std::vector<seqan3::dna5_vector> const & fragments)
 {
     using seqan3::bin_count;
@@ -208,6 +296,14 @@ void ReferenceIndex::build_ibf(std::vector<seqan3::dna5_vector> const & fragment
 }
 
 #if defined(LNCRNA_MERS_HAS_HIBF)
+/*
+* @fn build_hibf
+* @brief Builds a hierarchical interleaved Bloom filter from the reference fragments.
+* @signature void ReferenceIndex::build_hibf(std::vector<seqan3::dna5_vector> const & fragments);
+* @param fragments: DNA fragments to insert into the HIBF.
+* @throws std::runtime_error when HIBF configuration validation fails.
+* @return None.
+*/
 void ReferenceIndex::build_hibf(std::vector<seqan3::dna5_vector> const & fragments)
 {
     auto hash_view = seqan3::views::kmer_hash(seqan3::ungapped{static_cast<uint8_t>(cfg_.kmer_size)});

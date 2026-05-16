@@ -22,6 +22,16 @@
 namespace
 {
 
+/*
+* @fn sequence_kmer_to_string
+* @brief Converts one k-mer window from a sequence into its string representation.
+* @signature std::string sequence_kmer_to_string(auto const & seq, std::size_t pos, std::size_t kmer_size);
+* @param seq: nucleotide sequence containing the k-mer.
+* @param pos: zero-based start position of the k-mer.
+* @param kmer_size: number of bases to include.
+* @throws None.
+* @return K-mer string.
+*/
 std::string sequence_kmer_to_string(auto const & seq, std::size_t pos, std::size_t kmer_size)
 {
     std::string kmer;
@@ -33,6 +43,16 @@ std::string sequence_kmer_to_string(auto const & seq, std::size_t pos, std::size
     return kmer;
 }
 
+/*
+* @fn collect_unique_matching_kmers
+* @brief Collects distinct query k-mers that match exactly one indexed bin.
+* @signature std::vector<std::string> collect_unique_matching_kmers(auto const & seq, auto const & counts, std::size_t kmer_size);
+* @param seq: query nucleotide sequence.
+* @param counts: per-query-k-mer bin hit counts.
+* @param kmer_size: k-mer length used to reconstruct matching k-mers.
+* @throws None.
+* @return Vector of distinct k-mers with exactly one index hit.
+*/
 std::vector<std::string> collect_unique_matching_kmers(auto const & seq,
                                                        auto const & counts,
                                                        std::size_t kmer_size)
@@ -54,6 +74,14 @@ std::vector<std::string> collect_unique_matching_kmers(auto const & seq,
     return ibf_unique_kmers;
 }
 
+/*
+* @fn encode_matching_kmer_hits
+* @brief Encodes nonzero k-mer hit positions and counts as slash-delimited strings.
+* @signature std::pair<std::string, std::string> encode_matching_kmer_hits(auto const & counts);
+* @param counts: per-query-k-mer bin hit counts.
+* @throws None.
+* @return Pair of slash-delimited one-based k-mer indices and corresponding hit counts.
+*/
 std::pair<std::string, std::string> encode_matching_kmer_hits(auto const & counts)
 {
     std::ostringstream indices;
@@ -81,6 +109,16 @@ std::pair<std::string, std::string> encode_matching_kmer_hits(auto const & count
 
 } // namespace
 
+/*
+* @fn QueryProcessor
+* @brief Creates a query processor for one reference index.
+* @signature QueryProcessor::QueryProcessor(Config const & cfg, ReferenceIndex & index, std::string const & ref_name);
+* @param cfg: application configuration.
+* @param index: reference index used to count query k-mer hits.
+* @param ref_name: reference name used in output headers and file names.
+* @throws None.
+* @return None.
+*/
 QueryProcessor::QueryProcessor(Config const & cfg,
                                ReferenceIndex & index,
                                std::string const & ref_name)
@@ -89,9 +127,15 @@ QueryProcessor::QueryProcessor(Config const & cfg,
     , ref_name_{ref_name}
 {}
 
-// -------------------------------------------------------------
-// Combined mode: fill one column (ref_idx) of results[q][ref_idx]
-// -------------------------------------------------------------
+/*
+* @fn run_fill_results_col
+* @brief Processes all queries for combined output mode and fills one reference column in the result matrix.
+* @signature void QueryProcessor::run_fill_results_col(std::size_t ref_idx, std::vector<std::vector<RefResult>> & results) const;
+* @param ref_idx: reference column index to fill.
+* @param results: result matrix indexed by query and reference.
+* @throws std::runtime_error when output files cannot be opened or result dimensions do not match the query file.
+* @return None.
+*/
 void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
                                           std::vector<std::vector<RefResult>> & results) const
 {
@@ -193,9 +237,14 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
     Logger::info("K-mer hit results written to: " + kmer_hits_path.string());
 }
 
-// -------------------------------------------------------------
-// Per-IBF mode: stream directly to results_<ref>.tsv
-// -------------------------------------------------------------
+/*
+* @fn run_write_per_ibf
+* @brief Processes all queries for per-reference output mode and streams one TSV result file.
+* @signature void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) const;
+* @param out_path: path to the per-reference TSV output file.
+* @throws std::runtime_error when an output file cannot be opened or sequence processing fails.
+* @return None.
+*/
 void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) const
 {
     using clock = std::chrono::steady_clock;

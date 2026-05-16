@@ -21,6 +21,14 @@
 
 namespace fs = std::filesystem;
 
+/*
+* @fn is_fasta_like
+* @brief Checks whether a path has a supported FASTA or gzipped FASTA extension.
+* @signature static bool is_fasta_like(fs::path const & p);
+* @param p: path to inspect.
+* @throws None.
+* @return True when the path extension is supported, otherwise false.
+*/
 static bool is_fasta_like(fs::path const & p)
 {
     std::string s = p.string();
@@ -35,6 +43,15 @@ static bool is_fasta_like(fs::path const & p)
            ends_with(".fa.gz") || ends_with(".fna.gz") || ends_with(".fasta.gz");
 }
 
+/*
+* @fn main
+* @brief Loads configuration, indexes reference files, processes queries, and writes result outputs.
+* @signature int main(int argc, char ** argv);
+* @param argc: number of command-line arguments.
+* @param argv: command-line argument vector.
+* @throws None.
+* @return Process exit code.
+*/
 int main(int argc, char ** argv)
 {
     fs::path config_path = "config.toml";
