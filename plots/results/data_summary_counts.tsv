@@ -1,0 +1,14 @@
+category	name	count_type	count	total_bp	source_file
+summary	total_genome_references	genomes	11	NA	genomes
+summary	total_lncRNA_transcripts	lncRNA_transcripts	197211	202277942	lncrna\gencode.v49.lncRNA_transcripts.fa
+genome	Clintptrv2	chromosomes_or_records	4346	3050398082	genomes\Clintptrv2_GCF_002880755.1_Clint_PTRv2_genomic.fna.gz
+genome	H9T2Thap1	chromosomes_or_records	23	3040318105	genomes\H9T2Thap1_GCA_054883195.1_H9_T2T.hap1_genomic.fna.gz
+genome	H9T2Thap2	chromosomes_or_records	23	3018323265	genomes\H9T2Thap2_GCA_054883265.1_H9_T2T.hap2_genomic.fna.gz
+genome	matHPRCF2	chromosomes_or_records	65	3024651147	genomes\matHPRCF2_GCA_018503275.2_NA19240_mat_hprc_f2_genomic.fna.gz
+genome	MhudibluPPAv0	chromosomes_or_records	4293	3051901337	genomes\MhudibluPPAv0_GCF_013052645.1_Mhudiblu_PPA_v0_genomic.fna.gz
+genome	Mmul10	chromosomes_or_records	2939	2971331530	genomes\Mmul10_GCF_003339765.1_Mmul_10_genomic.fna.gz
+genome	mPanPan1v20pri	chromosomes_or_records	31	3244905271	genomes\mPanPan1v20pri_GCF_029289425.2_NHGRI_mPanPan1-v2.0_pri_genomic.fna.gz
+genome	mPanTro3v20pri	chromosomes_or_records	26	3177756316	genomes\mPanTro3v20pri_GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic.fna.gz
+genome	panpan11	chromosomes_or_records	10274	3286643896	genomes\panpan11_GCF_000258655.2_panpan1.1_genomic.fna.gz
+genome	patHPRCf2	chromosomes_or_records	64	3038833213	genomes\patHPRCf2_GCA_018503265.2_NA19240_pat_hprc_f2_genomic.fna.gz
+genome	T2TMMU8v20	chromosomes_or_records	22	3115120525	genomes\T2TMMU8v20_GCF_049350105.2_T2T-MMU8v2.0_genomic.fna.gz
