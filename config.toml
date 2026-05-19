@@ -1,16 +1,16 @@
 [general]
-index_method = "hibf"
+index_method = "ibf"
 
 ref_dir = "/mnt/d/primates_bmc/genomes/"
 query_file = "/mnt/d/primates_bmc/lncrna/gencode.v49.lncRNA_transcripts.fa"
 
-output_dir = "/mnt/d/primates_bmc/output_kmers"
+output_dir = "/mnt/d/primates_bmc/kmers_results/20"
 output_file = "results.tsv"
 log_file = "ibf_run.log"
 
-fragment_size = 8000
-kmer_size = 15
-hit_threshold = 13
+fragment_size = 80000
+kmer_size = 20
+hit_threshold = 15
 threads = 1
 
 store_fragments = false
