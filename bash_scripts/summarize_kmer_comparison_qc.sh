@@ -93,37 +93,31 @@ if [[ ${#INPUT_FILES[@]} -eq 0 ]]; then
     exit 1
 fi
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kmer_qc.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kmer_qc_fast.XXXXXX")"
 cleanup() {
     rm -rf "${TMP_DIR}"
 }
 trap cleanup EXIT
 
-PASS_TMP="${TMP_DIR}/pass_counts.tsv"
-SUMMARY_TMP="${TMP_DIR}/summary.tsv"
-STRICT_TMP="${TMP_DIR}/strict.tsv"
-BASIC_TMP="${TMP_DIR}/basic.tsv"
-GENE_TMP="${TMP_DIR}/gene_summary.tsv"
-
 printf '%s\n' \
     "k_size	transcript_name	gene_name	gene_id	transcript_id	transcript_length	total_kmers	genome_count	strict_pass_count	basic_pass_count	min_matched_kmer_ratio	mean_matched_kmer_ratio	max_matched_kmer_ratio" \
-    > "${PASS_TMP}"
+    > "${PASS_COUNTS}"
 
 printf '%s\n' \
     "k_size	total_transcripts	total_unique_gene_names	genome_count	strict_threshold	basic_threshold	strict_shared_transcripts_all_genomes	basic_shared_transcripts_all_genomes	strict_shared_unique_gene_names	basic_shared_unique_gene_names" \
-    > "${SUMMARY_TMP}"
+    > "${SUMMARY}"
 
 printf '%s\n' \
     "k_size	transcript_name	gene_name	gene_id	transcript_id	transcript_length	total_kmers	genome_count	strict_pass_count	basic_pass_count	min_matched_kmer_ratio	mean_matched_kmer_ratio	max_matched_kmer_ratio" \
-    > "${STRICT_TMP}"
+    > "${STRICT_SHARED}"
 
 printf '%s\n' \
     "k_size	transcript_name	gene_name	gene_id	transcript_id	transcript_length	total_kmers	genome_count	strict_pass_count	basic_pass_count	min_matched_kmer_ratio	mean_matched_kmer_ratio	max_matched_kmer_ratio" \
-    > "${BASIC_TMP}"
+    > "${BASIC_SHARED}"
 
 printf '%s\n' \
     "k_size	gene_name	associated_gene_ids	total_transcripts	strict_shared_transcripts_all_genomes	basic_shared_transcripts_all_genomes	strict_shared_gene_all_genomes	basic_shared_gene_all_genomes" \
-    > "${GENE_TMP}"
+    > "${GENE_SUMMARY}"
 
 total_files=${#INPUT_FILES[@]}
 file_number=0
@@ -136,53 +130,94 @@ for input_tsv in "${INPUT_FILES[@]}"; do
         k_size="${base}"
     fi
 
-    status_matrix="${OUT_DIR}/status_matrices/kmer_transcript_status_matrix_k${k_size}.tsv"
-    per_k_pass="${TMP_DIR}/pass_k${k_size}.tsv"
-    per_k_gene="${TMP_DIR}/gene_k${k_size}.tsv"
-
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${file_number}/${total_files}] Processing k=${k_size}: ${input_tsv}" >&2
+
+    status_matrix="${OUT_DIR}/status_matrices/kmer_transcript_status_matrix_k${k_size}.tsv"
+    pass_tmp="${TMP_DIR}/pass_k${k_size}.tsv"
+    strict_tmp="${TMP_DIR}/strict_k${k_size}.tsv"
+    basic_tmp="${TMP_DIR}/basic_k${k_size}.tsv"
+    summary_tmp="${TMP_DIR}/summary_k${k_size}.tsv"
+    gene_tmp="${TMP_DIR}/gene_k${k_size}.tsv"
 
     awk \
         -v k_size="${k_size}" \
         -v strict="${STRICT_THRESHOLD}" \
         -v basic="${BASIC_THRESHOLD}" \
         -v status_out="${status_matrix}" \
-        -v pass_out="${per_k_pass}" '
+        -v pass_out="${pass_tmp}" \
+        -v strict_out="${strict_tmp}" \
+        -v basic_out="${basic_tmp}" \
+        -v summary_out="${summary_tmp}" \
+        -v gene_out="${gene_tmp}" '
         BEGIN {
             FS = OFS = "\t"
+            progress_every = 25000
         }
 
         NR == 1 {
             genome_count = 0
             status_header = "transcript_name\tgene_name\tgene_id\ttranscript_id"
+
             for (i = 7; i <= NF; i += 2) {
                 ratio_col[++genome_count] = i + 1
                 genome = $i
                 sub(/_matched_kmers$/, "", genome)
                 status_header = status_header OFS genome
             }
+
             print status_header > status_out
-            print "k_size", "transcript_name", "gene_name", "gene_id", "transcript_id", \
-                  "transcript_length", "total_kmers", "genome_count", \
-                  "strict_pass_count", "basic_pass_count", \
-                  "min_matched_kmer_ratio", "mean_matched_kmer_ratio", \
-                  "max_matched_kmer_ratio" > pass_out
+
+            pass_header = "k_size\ttranscript_name\tgene_name\tgene_id\ttranscript_id\ttranscript_length\ttotal_kmers\tgenome_count\tstrict_pass_count\tbasic_pass_count\tmin_matched_kmer_ratio\tmean_matched_kmer_ratio\tmax_matched_kmer_ratio"
+            print pass_header > pass_out
+            print pass_header > strict_out
+            print pass_header > basic_out
             next
         }
 
         {
+            row_count++
+            if (row_count % progress_every == 0) {
+                printf("  k=%s: processed %d transcript rows\n", k_size, row_count) > "/dev/stderr"
+            }
+
+            transcript_name = $1
+            gene_name = $2
+            gene_id = $3
+            transcript_id = $4
+            transcript_length = $5
+            total_kmers = $6
+
+            total_transcripts++
+            gene_seen[gene_name] = 1
+            gene_total[gene_name]++
+
+            key = gene_name SUBSEP gene_id
+            if (!(key in gene_id_seen)) {
+                gene_id_seen[key] = 1
+                if (gene_ids[gene_name] == "") {
+                    gene_ids[gene_name] = gene_id
+                } else {
+                    gene_ids[gene_name] = gene_ids[gene_name] "," gene_id
+                }
+            }
+
             strict_count = 0
             basic_count = 0
             sum_ratio = 0
             min_ratio = ""
             max_ratio = ""
-            status_line = $1 OFS $2 OFS $3 OFS $4
+            status_line = transcript_name OFS gene_name OFS gene_id OFS transcript_id
 
             for (j = 1; j <= genome_count; j++) {
                 ratio = $(ratio_col[j]) + 0
                 sum_ratio += ratio
-                if (min_ratio == "" || ratio < min_ratio) min_ratio = ratio
-                if (max_ratio == "" || ratio > max_ratio) max_ratio = ratio
+
+                if (min_ratio == "" || ratio < min_ratio) {
+                    min_ratio = ratio
+                }
+                if (max_ratio == "" || ratio > max_ratio) {
+                    max_ratio = ratio
+                }
 
                 if (ratio >= strict) {
                     strict_count++
@@ -194,104 +229,64 @@ for input_tsv in "${INPUT_FILES[@]}"; do
                 } else {
                     status = "LOW_KMER"
                 }
+
                 status_line = status_line OFS status
             }
 
             mean_ratio = genome_count ? sum_ratio / genome_count : 0
+            pass_line = k_size OFS transcript_name OFS gene_name OFS gene_id OFS transcript_id OFS transcript_length OFS total_kmers OFS genome_count OFS strict_count OFS basic_count OFS sprintf("%.6f", min_ratio) OFS sprintf("%.6f", mean_ratio) OFS sprintf("%.6f", max_ratio)
+
             print status_line > status_out
-            print k_size, $1, $2, $3, $4, $5, $6, genome_count, \
-                  strict_count, basic_count, \
-                  sprintf("%.6f", min_ratio), sprintf("%.6f", mean_ratio), \
-                  sprintf("%.6f", max_ratio) > pass_out
-        }
-    ' "${input_tsv}"
-
-    awk 'NR > 1' "${per_k_pass}" >> "${PASS_TMP}"
-
-    awk \
-        -v k_size="${k_size}" \
-        -v strict="${STRICT_THRESHOLD}" \
-        -v basic="${BASIC_THRESHOLD}" \
-        -v strict_file="${STRICT_TMP}" \
-        -v basic_file="${BASIC_TMP}" \
-        -v summary_file="${TMP_DIR}/summary_k${k_size}.tsv" \
-        -v gene_file="${per_k_gene}" '
-        BEGIN {
-            FS = OFS = "\t"
-        }
-
-        NR == 1 {
-            next
-        }
-
-        {
-            total++
-            gene = $3
-            gene_id = $4
-            gene_seen[gene] = 1
-            genome_count = $8 + 0
-            strict_count = $9 + 0
-            basic_count = $10 + 0
-
-            gene_id_seen[gene SUBSEP gene_id] = 1
-            gene_total[gene]++
+            print pass_line > pass_out
 
             if (strict_count == genome_count) {
-                strict_shared++
-                strict_gene_seen[gene] = 1
-                gene_strict_shared_tx[gene]++
-                print > strict_file
+                strict_shared_transcripts++
+                strict_gene_seen[gene_name] = 1
+                gene_strict_shared_tx[gene_name]++
+                print pass_line > strict_out
             }
+
             if (basic_count == genome_count) {
-                basic_shared++
-                basic_gene_seen[gene] = 1
-                gene_basic_shared_tx[gene]++
-                print > basic_file
+                basic_shared_transcripts++
+                basic_gene_seen[gene_name] = 1
+                gene_basic_shared_tx[gene_name]++
+                print pass_line > basic_out
             }
         }
 
         END {
-            for (g in gene_seen) total_genes++
-            for (g in strict_gene_seen) strict_genes++
-            for (g in basic_gene_seen) basic_genes++
-
-            print k_size, total + 0, total_genes + 0, genome_count + 0, \
-                  strict, basic, strict_shared + 0, basic_shared + 0, \
-                  strict_genes + 0, basic_genes + 0 > summary_file
+            printf("  k=%s: processed %d transcript rows\n", k_size, row_count) > "/dev/stderr"
 
             for (g in gene_seen) {
-                ids = ""
-                sep = ""
-                for (key in gene_id_seen) {
-                    split(key, key_parts, SUBSEP)
-                    if (key_parts[1] != g) continue
-                    ids = ids sep key_parts[2]
-                    sep = ","
-                }
-                print k_size, g, ids, gene_total[g] + 0, \
-                      gene_strict_shared_tx[g] + 0, \
-                      gene_basic_shared_tx[g] + 0, \
-                      ((g in strict_gene_seen) ? "True" : "False"), \
-                      ((g in basic_gene_seen) ? "True" : "False") > gene_file
+                total_genes++
+            }
+            for (g in strict_gene_seen) {
+                strict_genes++
+            }
+            for (g in basic_gene_seen) {
+                basic_genes++
+            }
+
+            print k_size, total_transcripts + 0, total_genes + 0, genome_count + 0, strict, basic, strict_shared_transcripts + 0, basic_shared_transcripts + 0, strict_genes + 0, basic_genes + 0 > summary_out
+
+            for (g in gene_seen) {
+                print k_size, g, gene_ids[g], gene_total[g] + 0, gene_strict_shared_tx[g] + 0, gene_basic_shared_tx[g] + 0, ((g in strict_gene_seen) ? "True" : "False"), ((g in basic_gene_seen) ? "True" : "False") > gene_out
             }
         }
-    ' "${per_k_pass}"
+    ' "${input_tsv}"
 
-    cat "${TMP_DIR}/summary_k${k_size}.tsv" >> "${SUMMARY_TMP}"
-    cat "${per_k_gene}" >> "${GENE_TMP}"
+    awk 'NR > 1' "${pass_tmp}" >> "${PASS_COUNTS}"
+    awk 'NR > 1' "${strict_tmp}" >> "${STRICT_SHARED}"
+    awk 'NR > 1' "${basic_tmp}" >> "${BASIC_SHARED}"
+    cat "${summary_tmp}" >> "${SUMMARY}"
+    cat "${gene_tmp}" >> "${GENE_SUMMARY}"
 done
-
-mv "${PASS_TMP}" "${PASS_COUNTS}"
-mv "${SUMMARY_TMP}" "${SUMMARY}"
-mv "${STRICT_TMP}" "${STRICT_SHARED}"
-mv "${BASIC_TMP}" "${BASIC_SHARED}"
-mv "${GENE_TMP}" "${GENE_SUMMARY}"
 
 echo "Done." >&2
 echo "Wrote:" >&2
 echo "  ${PASS_COUNTS}" >&2
 echo "  ${SUMMARY}" >&2
+echo "  ${GENE_SUMMARY}" >&2
 echo "  ${STRICT_SHARED}" >&2
 echo "  ${BASIC_SHARED}" >&2
-echo "  ${GENE_SUMMARY}" >&2
 echo "  ${OUT_DIR}/status_matrices/" >&2

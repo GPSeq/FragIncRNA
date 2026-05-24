@@ -1,0 +1,14 @@
+[INFO] 2026-05-24 13:03:25 Starting lncrna_mers.
+[INFO] 2026-05-24 13:03:25 Loaded config from: /mnt/c/Users/yynk1/Desktop/FragIncRNA/test_data/results/config_k15_per_reference.toml
+[INFO] 2026-05-24 13:03:25 Found 1 reference files to index.
+[INFO] 2026-05-24 13:03:25 Using 1 worker thread(s).
+[INFO] 2026-05-24 13:03:25 Total queries: 1
+[INFO] 2026-05-24 13:03:25 Processing reference: /mnt/c/Users/yynk1/Desktop/FragIncRNA/test_data/genomes/test.fasta (id='test')
+[INFO] 2026-05-24 13:03:25 Reading reference file: /mnt/c/Users/yynk1/Desktop/FragIncRNA/test_data/genomes/test.fasta
+[INFO] 2026-05-24 13:03:25 Reference 'test' fragmented into 2 fragments (len=80000, overlap=3).
+[INFO] 2026-05-24 13:03:25 Built IBF for reference 'test' (2 bins, 1024 bits per bin, 3 hash functions, target FPR=0.010000).
+[INFO] 2026-05-24 13:03:25 QueryProcessor (per-IBF) for reference 'test'.
+[INFO] 2026-05-24 13:03:25 Finished per-IBF results for 'test', total IBF time: 0.000001 s.
+[INFO] 2026-05-24 13:03:25 IBF unique k-mer results written to: /mnt/c/Users/yynk1/Desktop/FragIncRNA/test_data/results/unique_mers/test.tsv
+[INFO] 2026-05-24 13:03:25 K-mer hit results written to: /mnt/c/Users/yynk1/Desktop/FragIncRNA/test_data/results/test_kmers.tsv
+[INFO] 2026-05-24 13:03:25 lncrna_mers finished successfully.
