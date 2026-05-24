@@ -6,8 +6,10 @@
 #include <string>
 #include <vector>
 
+#include <seqan3/alphabet/nucleotide/dna4.hpp>
 #include <seqan3/alphabet/nucleotide/dna5.hpp>
 
+template <typename sequence_t>
 class Fragmenter
 {
 public:
@@ -30,10 +32,13 @@ public:
     * @throws std::runtime_error when fragment_size is invalid or sequence IO fails.
     * @return Vector of overlapping DNA fragments.
     */
-    std::vector<seqan3::dna5_vector>
+    std::vector<sequence_t>
     fragment_reference(std::filesystem::path const & ref_path,
                        std::string const & ref_id) const;
 
 private:
     Config cfg_;
 };
+
+using FragmenterDna5 = Fragmenter<seqan3::dna5_vector>;
+using FragmenterDna4 = Fragmenter<seqan3::dna4_vector>;
