@@ -14,6 +14,7 @@ struct RefResult
     double        pct{};
 };
 
+template <typename sequence_t>
 class QueryProcessor
 {
 public:
@@ -28,7 +29,7 @@ public:
     * @return None.
     */
     QueryProcessor(Config const & cfg,
-                   ReferenceIndex & index,
+                   ReferenceIndex<sequence_t> & index,
                    std::string const & ref_name);
 
     /*
@@ -55,6 +56,9 @@ public:
 
 private:
     Config      cfg_;
-    ReferenceIndex & index_;
+    ReferenceIndex<sequence_t> & index_;
     std::string ref_name_;
 };
+
+using QueryProcessorDna5 = QueryProcessor<seqan3::dna5_vector>;
+using QueryProcessorDna4 = QueryProcessor<seqan3::dna4_vector>;

@@ -25,14 +25,15 @@ namespace
 /*
 * @fn compute_flat_bin_bits
 * @brief Computes the number of bits per IBF bin from fragment length and false-positive settings.
-* @signature std::size_t compute_flat_bin_bits(std::vector<seqan3::dna5_vector> const & fragments, Config const & cfg, std::string const & ref_name);
+* @signature std::size_t compute_flat_bin_bits(std::vector<sequence_t> const & fragments, Config const & cfg, std::string const & ref_name);
 * @param fragments: reference fragments used to estimate maximum k-mer count per bin.
 * @param cfg: application configuration containing k-mer and IBF settings.
 * @param ref_name: reference name used in error messages.
 * @throws std::runtime_error when k-mer settings are incompatible with the fragments.
 * @return Number of bits to allocate per IBF bin.
 */
-std::size_t compute_flat_bin_bits(std::vector<seqan3::dna5_vector> const & fragments, Config const & cfg, std::string const & ref_name)
+template <typename sequence_t>
+std::size_t compute_flat_bin_bits(std::vector<sequence_t> const & fragments, Config const & cfg, std::string const & ref_name)
 {
     std::size_t max_len = 0;
     for (auto const & f : fragments)
@@ -66,7 +67,7 @@ std::size_t compute_flat_bin_bits(std::vector<seqan3::dna5_vector> const & fragm
 * @return Per-k-mer bin hit counts.
 */
 std::vector<std::size_t> count_hits_with_flat_ibf(seqan3::interleaved_bloom_filter<> const & ibf,
-                                                  seqan3::dna5_vector const & seq,
+                                                  auto const & seq,
                                                   std::size_t const kmer_size)
 {
     std::vector<std::size_t> counts;
@@ -100,7 +101,7 @@ std::vector<std::size_t> count_hits_with_flat_ibf(seqan3::interleaved_bloom_filt
 * @return Per-k-mer bin hit counts.
 */
 std::vector<std::size_t> count_hits_with_hibf(seqan::hibf::hierarchical_interleaved_bloom_filter const & hibf,
-                                              seqan3::dna5_vector const & seq,
+                                              auto const & seq,
                                               std::size_t const kmer_size)
 {
     std::vector<std::size_t> counts;
@@ -136,9 +137,10 @@ std::vector<std::size_t> count_hits_with_hibf(seqan::hibf::hierarchical_interlea
 * @throws std::runtime_error when fragments are empty, k-mer settings are invalid, or HIBF support is unavailable.
 * @return None.
 */
-ReferenceIndex::ReferenceIndex(std::string ref_name,
-                               std::vector<seqan3::dna5_vector> const & fragments,
-                               Config const & cfg)
+template <typename sequence_t>
+ReferenceIndex<sequence_t>::ReferenceIndex(std::string ref_name,
+                                           std::vector<sequence_t> const & fragments,
+                                           Config const & cfg)
     : ref_name_{std::move(ref_name)}
     , cfg_{cfg}
     , user_bin_count_{fragments.size()}
@@ -171,7 +173,8 @@ ReferenceIndex::ReferenceIndex(std::string ref_name,
 * @throws None.
 * @return None.
 */
-ReferenceIndex::~ReferenceIndex() = default;
+template <typename sequence_t>
+ReferenceIndex<sequence_t>::~ReferenceIndex() = default;
 
 /*
 * @fn bin_count
@@ -181,7 +184,8 @@ ReferenceIndex::~ReferenceIndex() = default;
 * @throws None.
 * @return Number of user bins.
 */
-std::size_t ReferenceIndex::bin_count() const noexcept
+template <typename sequence_t>
+std::size_t ReferenceIndex<sequence_t>::bin_count() const noexcept
 {
     return user_bin_count_;
 }
@@ -194,7 +198,8 @@ std::size_t ReferenceIndex::bin_count() const noexcept
 * @throws std::runtime_error when HIBF search is requested in a build without HIBF support.
 * @return Per-k-mer hit counts.
 */
-std::vector<std::size_t> ReferenceIndex::count_query_kmer_hits(seqan3::dna5_vector const & seq) const
+template <typename sequence_t>
+std::vector<std::size_t> ReferenceIndex<sequence_t>::count_query_kmer_hits(sequence_t const & seq) const
 {
     if (cfg_.index_method == IndexMethod::ibf)
         return count_hits_with_flat_ibf(*ibf_, seq, cfg_.kmer_size);
@@ -214,7 +219,8 @@ std::vector<std::size_t> ReferenceIndex::count_query_kmer_hits(seqan3::dna5_vect
 * @throws None.
 * @return Index file suffix.
 */
-std::string ReferenceIndex::index_file_suffix() const
+template <typename sequence_t>
+std::string ReferenceIndex<sequence_t>::index_file_suffix() const
 {
     return cfg_.index_method == IndexMethod::ibf ? ".ibf" : ".hibf";
 }
@@ -227,7 +233,8 @@ std::string ReferenceIndex::index_file_suffix() const
 * @throws std::runtime_error when the file cannot be opened or HIBF support is unavailable.
 * @return None.
 */
-void ReferenceIndex::store_to(std::filesystem::path const & out_path) const
+template <typename sequence_t>
+void ReferenceIndex<sequence_t>::store_to(std::filesystem::path const & out_path) const
 {
     std::ofstream os(out_path, std::ios::binary);
     if (!os)
@@ -254,7 +261,8 @@ void ReferenceIndex::store_to(std::filesystem::path const & out_path) const
 * @throws std::runtime_error when k-mer settings are invalid.
 * @return None.
 */
-void ReferenceIndex::build_ibf(std::vector<seqan3::dna5_vector> const & fragments)
+template <typename sequence_t>
+void ReferenceIndex<sequence_t>::build_ibf(std::vector<sequence_t> const & fragments)
 {
     using seqan3::bin_count;
     using seqan3::bin_index;
@@ -304,7 +312,8 @@ void ReferenceIndex::build_ibf(std::vector<seqan3::dna5_vector> const & fragment
 * @throws std::runtime_error when HIBF configuration validation fails.
 * @return None.
 */
-void ReferenceIndex::build_hibf(std::vector<seqan3::dna5_vector> const & fragments)
+template <typename sequence_t>
+void ReferenceIndex<sequence_t>::build_hibf(std::vector<sequence_t> const & fragments)
 {
     auto hash_view = seqan3::views::kmer_hash(seqan3::ungapped{static_cast<uint8_t>(cfg_.kmer_size)});
 
@@ -341,3 +350,6 @@ void ReferenceIndex::build_hibf(std::vector<seqan3::dna5_vector> const & fragmen
                  ", threads=" + std::to_string(hibf_cfg.threads) + ").");
 }
 #endif
+
+template class ReferenceIndex<seqan3::dna5_vector>;
+template class ReferenceIndex<seqan3::dna4_vector>;

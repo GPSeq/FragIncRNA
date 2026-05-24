@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include <seqan3/alphabet/nucleotide/dna4.hpp>
 #include <seqan3/alphabet/nucleotide/dna5.hpp>
 #include <seqan3/search/dream_index/interleaved_bloom_filter.hpp>
 
@@ -17,6 +18,7 @@ class hierarchical_interleaved_bloom_filter;
 }
 #endif
 
+template <typename sequence_t>
 class ReferenceIndex
 {
 public:
@@ -31,7 +33,7 @@ public:
     * @return None.
     */
     ReferenceIndex(std::string ref_name,
-                   std::vector<seqan3::dna5_vector> const & fragments,
+                   std::vector<sequence_t> const & fragments,
                    Config const & cfg);
 
     /*
@@ -75,7 +77,7 @@ public:
     * @throws std::runtime_error when HIBF search is requested in a build without HIBF support.
     * @return Per-k-mer hit counts.
     */
-    [[nodiscard]] std::vector<std::size_t> count_query_kmer_hits(seqan3::dna5_vector const & seq) const;
+    [[nodiscard]] std::vector<std::size_t> count_query_kmer_hits(sequence_t const & seq) const;
 
     /*
     * @fn index_file_suffix
@@ -115,7 +117,7 @@ private:
     * @throws std::runtime_error when k-mer settings are invalid.
     * @return None.
     */
-    void build_ibf(std::vector<seqan3::dna5_vector> const & fragments);
+    void build_ibf(std::vector<sequence_t> const & fragments);
 #if defined(LNCRNA_MERS_HAS_HIBF)
     /*
     * @fn build_hibf
@@ -125,6 +127,9 @@ private:
     * @throws std::runtime_error when HIBF configuration validation fails.
     * @return None.
     */
-    void build_hibf(std::vector<seqan3::dna5_vector> const & fragments);
+    void build_hibf(std::vector<sequence_t> const & fragments);
 #endif
 };
+
+using ReferenceIndexDna5 = ReferenceIndex<seqan3::dna5_vector>;
+using ReferenceIndexDna4 = ReferenceIndex<seqan3::dna4_vector>;

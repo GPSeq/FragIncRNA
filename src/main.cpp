@@ -17,6 +17,8 @@
 #include <thread>
 #include <vector>
 
+#include <seqan3/alphabet/nucleotide/dna4.hpp>
+#include <seqan3/alphabet/nucleotide/dna5.hpp>
 #include <seqan3/io/sequence_file/input.hpp>
 
 namespace fs = std::filesystem;
@@ -140,112 +142,126 @@ int main(int argc, char ** argv)
                            std::vector<RefResult>(ref_files.size()));
         }
 
-        auto process_reference = [&](std::size_t r)
+        auto run_with_alphabet = [&]<typename sequence_t>()
         {
-            auto const & ref_path = ref_files[r];
-            auto const & ref_id   = ref_ids[r];
-
-            Logger::info("Processing reference: " + ref_path.string() +
-                         " (id='" + ref_id + "')");
-
-            Fragmenter fragmenter{cfg};
-            auto fragments = fragmenter.fragment_reference(ref_path, ref_id);
-
-            ReferenceIndex ref_index{ref_id, fragments, cfg};
-
-            QueryProcessor qp{cfg, ref_index, ref_id};
-
-            if (cfg.single_results_writer)
+            auto process_reference = [&](std::size_t r)
             {
-                // fill column r of results
-                qp.run_fill_results_col(r, results);
-            }
-            else
-            {
-                // write per-IBF TSV immediately
-                auto out_path = cfg.output_dir / ("results_" + ref_id + ".tsv");
-                qp.run_write_per_ibf(out_path);
-            }
+                auto const & ref_path = ref_files[r];
+                auto const & ref_id   = ref_ids[r];
 
-            // Delete IBF on disk immediately after use, if requested
-            if (cfg.store_index)
-            {
-                auto index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
-                ref_index.store_to(index_path);
-                Logger::info("Stored index for reference '" + ref_id +
-                             "' to file: " + index_path.string());
-            }
+                Logger::info("Processing reference: " + ref_path.string() +
+                             " (id='" + ref_id + "')");
 
-            if (cfg.cleanup_index && cfg.store_index)
-            {
-                auto index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
-                std::error_code ec;
-                if (fs::exists(index_path, ec))
+                Fragmenter<sequence_t> fragmenter{cfg};
+                auto fragments = fragmenter.fragment_reference(ref_path, ref_id);
+
+                ReferenceIndex<sequence_t> ref_index{ref_id, fragments, cfg};
+
+                QueryProcessor<sequence_t> qp{cfg, ref_index, ref_id};
+
+                if (cfg.single_results_writer)
                 {
-                    fs::remove(index_path, ec);
-                    if (!ec)
-                        Logger::info("Removed index file: " + index_path.string());
-                    else
-                        Logger::warn("Failed to remove index file: " + index_path.string() +
-                                     " (" + ec.message() + ")");
+                    // fill column r of results
+                    qp.run_fill_results_col(r, results);
+                }
+                else
+                {
+                    // write per-IBF TSV immediately
+                    auto out_path = cfg.output_dir / ("results_" + ref_id + ".tsv");
+                    qp.run_write_per_ibf(out_path);
+                }
+
+                // Delete IBF on disk immediately after use, if requested
+                if (cfg.store_index)
+                {
+                    auto index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
+                    ref_index.store_to(index_path);
+                    Logger::info("Stored index for reference '" + ref_id +
+                                 "' to file: " + index_path.string());
+                }
+
+                if (cfg.cleanup_index && cfg.store_index)
+                {
+                    auto index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
+                    std::error_code ec;
+                    if (fs::exists(index_path, ec))
+                    {
+                        fs::remove(index_path, ec);
+                        if (!ec)
+                            Logger::info("Removed index file: " + index_path.string());
+                        else
+                            Logger::warn("Failed to remove index file: " + index_path.string() +
+                                         " (" + ec.message() + ")");
+                    }
+                }
+            };
+
+            std::size_t worker_count = std::min<std::size_t>(cfg.threads, ref_files.size());
+            std::deque<std::future<void>> active_workers;
+
+            for (std::size_t r = 0; r < ref_files.size(); ++r)
+            {
+                active_workers.push_back(std::async(std::launch::async, process_reference, r));
+                if (active_workers.size() >= worker_count)
+                {
+                    active_workers.front().get();
+                    active_workers.pop_front();
                 }
             }
-        };
 
-        std::size_t worker_count = std::min<std::size_t>(cfg.threads, ref_files.size());
-        std::deque<std::future<void>> active_workers;
-
-        for (std::size_t r = 0; r < ref_files.size(); ++r)
-        {
-            active_workers.push_back(std::async(std::launch::async, process_reference, r));
-            if (active_workers.size() >= worker_count)
+            while (!active_workers.empty())
             {
                 active_workers.front().get();
                 active_workers.pop_front();
             }
-        }
 
-        while (!active_workers.empty())
-        {
-            active_workers.front().get();
-            active_workers.pop_front();
-        }
-
-        // Combined mode: write final TSV once from results matrix
-        if (cfg.single_results_writer)
-        {
-            auto out_path = cfg.output_dir / cfg.output_file;
-            std::ofstream out(out_path);
-            if (!out)
-                throw std::runtime_error("Failed to open result output file: " + out_path.string());
-
-            // header
-            out << "query_index";
-            for (std::size_t r = 0; r < ref_ids.size(); ++r)
+            // Combined mode: write final TSV once from results matrix
+            if (cfg.single_results_writer)
             {
-                out << '\t' << ref_ids[r] << "_count"
-                    << '\t' << ref_ids[r] << "_ibf_unique_kmer"
-                    << '\t' << ref_ids[r] << "_pass"
-                    << '\t' << ref_ids[r] << "_pct";
-            }
-            out << '\n';
+                auto out_path = cfg.output_dir / cfg.output_file;
+                std::ofstream out(out_path);
+                if (!out)
+                    throw std::runtime_error("Failed to open result output file: " + out_path.string());
 
-            // rows
-            for (std::size_t q = 0; q < total_queries; ++q)
-            {
-                out << q;
+                // header
+                out << "query_index";
                 for (std::size_t r = 0; r < ref_ids.size(); ++r)
                 {
-                    auto const & rr = results[q][r];
-                    out << '\t' << rr.count
-                        << '\t' << rr.ibf_unique_kmers
-                        << '\t' << (rr.pass ? 1 : 0)
-                        << '\t' << std::fixed << std::setprecision(4) << rr.pct;
+                    out << '\t' << ref_ids[r] << "_count"
+                        << '\t' << ref_ids[r] << "_ibf_unique_kmer"
+                        << '\t' << ref_ids[r] << "_pass"
+                        << '\t' << ref_ids[r] << "_pct";
                 }
                 out << '\n';
-            }
 
-            Logger::info("Combined results written to: " + out_path.string());
+                // rows
+                for (std::size_t q = 0; q < total_queries; ++q)
+                {
+                    out << q;
+                    for (std::size_t r = 0; r < ref_ids.size(); ++r)
+                    {
+                        auto const & rr = results[q][r];
+                        out << '\t' << rr.count
+                            << '\t' << rr.ibf_unique_kmers
+                            << '\t' << (rr.pass ? 1 : 0)
+                            << '\t' << std::fixed << std::setprecision(4) << rr.pct;
+                    }
+                    out << '\n';
+                }
+
+                Logger::info("Combined results written to: " + out_path.string());
+            }
+        };
+
+        if (cfg.kmer_size > 27)
+        {
+            Logger::info("kmer_size > 27: using dna4 alphabet and removing N bases before k-mer hashing.");
+            run_with_alphabet.operator()<seqan3::dna4_vector>();
+        }
+        else
+        {
+            Logger::info("kmer_size <= 27: using dna5 alphabet.");
+            run_with_alphabet.operator()<seqan3::dna5_vector>();
         }
 
         Logger::info("lncrna_mers finished successfully.");

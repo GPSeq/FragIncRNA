@@ -82,7 +82,7 @@ void test_fragmenter_returns_overlapping_fragments()
     Config cfg;
     cfg.fragment_size = 5;
 
-    Fragmenter fragmenter{cfg};
+    FragmenterDna5 fragmenter{cfg};
     auto fragments = fragmenter.fragment_reference(fasta, "ref1");
 
     expect(fragments.size() == 5, "expected 5 fragments");
@@ -105,7 +105,7 @@ void test_fragmenter_writes_fragment_fasta_when_enabled()
     cfg.store_fragments = true;
     cfg.output_dir = out_dir;
 
-    Fragmenter fragmenter{cfg};
+    FragmenterDna5 fragmenter{cfg};
     auto fragments = fragmenter.fragment_reference(fasta, "ref2");
 
     auto fragment_file = out_dir / "ref2_fragments.fasta";
@@ -130,7 +130,7 @@ void test_fragmenter_rejects_too_small_fragment_size()
     Config cfg;
     cfg.fragment_size = 3;
 
-    Fragmenter fragmenter{cfg};
+    FragmenterDna5 fragmenter{cfg};
 
     bool threw = false;
     try
@@ -157,7 +157,7 @@ void test_reference_index_rejects_invalid_kmer_size()
     bool threw = false;
     try
     {
-        (void) ReferenceIndex{"ref4", fragments, cfg};
+        (void) ReferenceIndexDna5{"ref4", fragments, cfg};
     }
     catch (std::runtime_error const & ex)
     {
@@ -183,7 +183,7 @@ void test_reference_index_reports_fragment_count_as_bin_count()
         seqan3::dna5_vector{"GTACC"_dna5}
     };
 
-    ReferenceIndex index{"ref5", fragments, cfg};
+    ReferenceIndexDna5 index{"ref5", fragments, cfg};
     expect(index.bin_count() == fragments.size(), "unexpected IBF bin count");
 }
 
@@ -287,8 +287,8 @@ void test_query_processor_writes_matching_kmer_hit_file()
         seqan3::dna5_vector{"CGTAC"_dna5}
     };
 
-    ReferenceIndex index{"ref6", fragments, cfg};
-    QueryProcessor processor{cfg, index, "ref6"};
+    ReferenceIndexDna5 index{"ref6", fragments, cfg};
+    QueryProcessorDna5 processor{cfg, index, "ref6"};
     processor.run_write_per_ibf(results_path);
 
     auto kmer_hits = read_text(temp_dir / "ref6_kmers.tsv");

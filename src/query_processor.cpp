@@ -15,6 +15,7 @@
 #include <chrono>
 #include <string>
 #include <iostream>
+#include <type_traits>
 
 #include <seqan3/io/sequence_file/input.hpp>
 #include <seqan3/search/views/kmer_hash.hpp>
@@ -107,6 +108,30 @@ std::pair<std::string, std::string> encode_matching_kmer_hits(auto const & count
     return {indices.str(), hit_counts.str()};
 }
 
+template <typename sequence_t>
+sequence_t sanitize_query_sequence(auto const & input_seq)
+{
+    sequence_t out;
+    out.reserve(input_seq.size());
+
+    for (auto const base : input_seq)
+    {
+        char const c = seqan3::to_char(base);
+        if constexpr (std::is_same_v<sequence_t, seqan3::dna4_vector>)
+        {
+            if (c == 'N' || c == 'n')
+                continue;
+            out.push_back(seqan3::assign_char_to(c, seqan3::dna4{}));
+        }
+        else
+        {
+            out.push_back(seqan3::assign_char_to(c, seqan3::dna5{}));
+        }
+    }
+
+    return out;
+}
+
 } // namespace
 
 /*
@@ -119,9 +144,10 @@ std::pair<std::string, std::string> encode_matching_kmer_hits(auto const & count
 * @throws None.
 * @return None.
 */
-QueryProcessor::QueryProcessor(Config const & cfg,
-                               ReferenceIndex & index,
-                               std::string const & ref_name)
+template <typename sequence_t>
+QueryProcessor<sequence_t>::QueryProcessor(Config const & cfg,
+                                           ReferenceIndex<sequence_t> & index,
+                                           std::string const & ref_name)
     : cfg_{cfg}
     , index_{index}
     , ref_name_{ref_name}
@@ -136,8 +162,9 @@ QueryProcessor::QueryProcessor(Config const & cfg,
 * @throws std::runtime_error when output files cannot be opened or result dimensions do not match the query file.
 * @return None.
 */
-void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
-                                          std::vector<std::vector<RefResult>> & results) const
+template <typename sequence_t>
+void QueryProcessor<sequence_t>::run_fill_results_col(std::size_t ref_idx,
+                                                      std::vector<std::vector<RefResult>> & results) const
 {
     using clock = std::chrono::steady_clock;
 
@@ -171,7 +198,7 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
         if (q >= total_queries)
             throw std::runtime_error("More queries in file than allocated rows in results matrix.");
 
-        auto const & seq = record.sequence();
+        auto seq = sanitize_query_sequence<sequence_t>(record.sequence());
         std::size_t total_kmers =
             seq.size() >= cfg_.kmer_size ? seq.size() - cfg_.kmer_size + 1 : 0;
 
@@ -245,7 +272,8 @@ void QueryProcessor::run_fill_results_col(std::size_t ref_idx,
 * @throws std::runtime_error when an output file cannot be opened or sequence processing fails.
 * @return None.
 */
-void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) const
+template <typename sequence_t>
+void QueryProcessor<sequence_t>::run_write_per_ibf(std::filesystem::path const & out_path) const
 {
     using clock = std::chrono::steady_clock;
 
@@ -286,7 +314,7 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
 
     for (auto & record : query_in)
     {
-        auto const & seq = record.sequence();
+        auto seq = sanitize_query_sequence<sequence_t>(record.sequence());
 
         std::size_t total_kmers =
             seq.size() >= cfg_.kmer_size ? seq.size() - cfg_.kmer_size + 1 : 0;
@@ -347,6 +375,9 @@ void QueryProcessor::run_write_per_ibf(std::filesystem::path const & out_path) c
     Logger::info("IBF unique k-mer results written to: " + unique_path.string());
     Logger::info("K-mer hit results written to: " + kmer_hits_path.string());
 }
+
+template class QueryProcessor<seqan3::dna5_vector>;
+template class QueryProcessor<seqan3::dna4_vector>;
 
 /*
 void QueryProcessor::run(std::vector<std::vector<RefResult>> & results)

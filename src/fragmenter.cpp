@@ -4,21 +4,39 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <type_traits>
 
 #include <seqan3/io/sequence_file/input.hpp>
 #include <seqan3/io/sequence_file/output.hpp>
 
-/*
-* @fn Fragmenter
-* @brief Creates a fragmenter using the supplied application configuration.
-* @signature Fragmenter::Fragmenter(Config const & cfg);
-* @param cfg: application configuration that controls fragment size and output behavior.
-* @throws None.
-* @return None.
-*/
-Fragmenter::Fragmenter(Config const & cfg)
-    : cfg_{cfg}
-{}
+namespace
+{
+
+template <typename sequence_t>
+sequence_t sanitize_sequence(auto const & input_seq)
+{
+    sequence_t out;
+    out.reserve(input_seq.size());
+
+    for (auto const base : input_seq)
+    {
+        char const c = seqan3::to_char(base);
+        if constexpr (std::is_same_v<sequence_t, seqan3::dna4_vector>)
+        {
+            if (c == 'N' || c == 'n')
+                continue;
+            out.push_back(seqan3::assign_char_to(c, seqan3::dna4{}));
+        }
+        else
+        {
+            out.push_back(seqan3::assign_char_to(c, seqan3::dna5{}));
+        }
+    }
+
+    return out;
+}
+
+} // namespace
 
 /*
 * @fn fragment_reference
@@ -29,14 +47,20 @@ Fragmenter::Fragmenter(Config const & cfg)
 * @throws std::runtime_error when fragment_size is invalid or sequence IO fails.
 * @return Vector of overlapping DNA fragments.
 */
-std::vector<seqan3::dna5_vector>
-Fragmenter::fragment_reference(std::filesystem::path const & ref_path,
-                               std::string const & ref_id) const
+template <typename sequence_t>
+Fragmenter<sequence_t>::Fragmenter(Config const & cfg)
+    : cfg_{cfg}
+{}
+
+template <typename sequence_t>
+std::vector<sequence_t>
+Fragmenter<sequence_t>::fragment_reference(std::filesystem::path const & ref_path,
+                                           std::string const & ref_id) const
 {
     if (cfg_.fragment_size < 4)
         throw std::runtime_error{"fragment_size must be >= 4 (to allow 3 bp overlap)."};
 
-    std::vector<seqan3::dna5_vector> fragments;
+    std::vector<sequence_t> fragments;
 
     Logger::info("Reading reference file: " + ref_path.string());
 
@@ -61,7 +85,7 @@ Fragmenter::fragment_reference(std::filesystem::path const & ref_path,
         std::size_t global_frag_idx = 0;
         for (auto & record : ref_in)
         {
-            auto const & seq = record.sequence();
+            auto seq = sanitize_sequence<sequence_t>(record.sequence());
             std::size_t seq_len = seq.size();
             std::size_t pos = 0;
 
@@ -70,7 +94,7 @@ Fragmenter::fragment_reference(std::filesystem::path const & ref_path,
                 std::size_t remaining = seq_len - pos;
                 std::size_t len = remaining >= frag_len ? frag_len : remaining;
 
-                seqan3::dna5_vector frag;
+                sequence_t frag;
                 frag.resize(len);
                 std::copy_n(seq.begin() + static_cast<std::ptrdiff_t>(pos),
                             static_cast<std::ptrdiff_t>(len),
@@ -92,7 +116,7 @@ Fragmenter::fragment_reference(std::filesystem::path const & ref_path,
     {
         for (auto & record : ref_in)
         {
-            auto const & seq = record.sequence();
+            auto seq = sanitize_sequence<sequence_t>(record.sequence());
             std::size_t seq_len = seq.size();
             std::size_t pos = 0;
 
@@ -101,7 +125,7 @@ Fragmenter::fragment_reference(std::filesystem::path const & ref_path,
                 std::size_t remaining = seq_len - pos;
                 std::size_t len = remaining >= frag_len ? frag_len : remaining;
 
-                seqan3::dna5_vector frag;
+                sequence_t frag;
                 frag.resize(len);
                 std::copy_n(seq.begin() + static_cast<std::ptrdiff_t>(pos),
                             static_cast<std::ptrdiff_t>(len),
@@ -122,3 +146,6 @@ Fragmenter::fragment_reference(std::filesystem::path const & ref_path,
 
     return fragments;
 }
+
+template class Fragmenter<seqan3::dna5_vector>;
+template class Fragmenter<seqan3::dna4_vector>;
