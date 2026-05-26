@@ -436,10 +436,9 @@ Thresholds can be changed with:
 bash summarize_kmer_comparison_qc.sh \
   -i ../../kmers_comparison \
   -o ../../kmers_comparison/qc \
-  -s 0.95 \
+  -s 0.90 \
   -b 0.80
 ```
-
 Status values:
 
 - `PASS_STRICT_KMER`: matched k-mer ratio is at least the strict threshold.
