@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-Make paper-style QC plots for the matched k-mer comparison summaries.
-
 Example:
   python plots/results/plot_kmer_comparison_qc.py \
       --qc-dir ../kmers_comparison/qc \
@@ -14,8 +12,6 @@ import argparse
 import os
 from pathlib import Path
 
-# Keep plotting/import caches in writable locations even when the script is run
-# from a restricted environment.
 os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/matplotlib-cache")
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
 
