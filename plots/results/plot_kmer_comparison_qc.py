@@ -278,7 +278,7 @@ def plot_retention_panel(ax: plt.Axes, plot_summary: pd.DataFrame) -> None:
     ymin = max(0.99996, y.min() - 0.000005)
     ax.set_ylim(ymin, 1.000002)
     ax.set_xticks(x)
-    ax.set_title("Transcript retention is stable across k")
+    ax.set_title("Transcript retention by k-mer size")
     style_axis(ax)
     add_panel_label(ax, "a")
 
@@ -307,7 +307,7 @@ def plot_edge_case_bars(ax: plt.Axes, plot_summary: pd.DataFrame) -> None:
     ax.set_xticks(x, labels=plot_summary["k_size"].astype(str))
     ax.set_xlabel("k-mer size")
     ax.set_ylabel("Transcripts")
-    ax.set_title("Only a handful of edge cases drive the QC signal")
+    ax.set_title("Transcript edge-case classes")
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
     ax.legend(loc="upper left")
     style_axis(ax)
@@ -328,7 +328,7 @@ def plot_status_heatmap(
     ax.set_xticks(np.arange(heat.shape[1]), labels=[str(k) for k in heat.columns])
     ax.set_yticks(np.arange(heat.shape[0]), labels=labels)
     ax.set_xlabel("k-mer size")
-    ax.set_title("LOW_KMER calls are not genome-specific")
+    ax.set_title("LOW_KMER counts by genome")
     ax.tick_params(axis="y", length=0)
 
     for y in range(heat.shape[0]):
@@ -400,7 +400,7 @@ def plot_edge_case_map(ax: plt.Axes, edge: pd.DataFrame, plot_summary: pd.DataFr
     ax.set_xlim(plot_summary["k_size"].min() - 0.7, plot_summary["k_size"].max() + 0.7)
     ax.set_ylim(-0.6, len(y_labels) - 0.4)
     ax.invert_yaxis()
-    ax.set_title("Named edge cases explain the non-perfect rows")
+    ax.set_title("Edge cases by transcript and k-mer size")
     ax.legend(loc="lower left")
     style_axis(ax, grid_axis="x")
     add_panel_label(ax, "d")
