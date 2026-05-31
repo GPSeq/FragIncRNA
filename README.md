@@ -1,5 +1,5 @@
 # FragIncRNA
-
+[![CMake tests](https://github.com/GPSeq/FragIncRNA/actions/workflows/cmake-single-platform.yml/badge.svg?branch=main)](https://github.com/GPSeq/FragIncRNA/actions/workflows/cmake-single-platform.yml)   
 `FragIncRNA` builds per-reference fragment indexes from FASTA references, queries lncRNA sequences against them, and writes match summaries plus unique matching k-mers. The index backend can be either a flat `ibf` or a hierarchical `hibf`.
 
 ## Requirements
