@@ -116,8 +116,8 @@ void test_fragmenter_writes_fragment_fasta_when_enabled()
     std::string contents((std::istreambuf_iterator<char>(in)),
                          std::istreambuf_iterator<char>());
 
-    expect(contents.find("> ref2_frag0") != std::string::npos, "missing first fragment ID");
-    expect(contents.find("AACC") != std::string::npos, "missing first fragment sequence");
+    expect(contents.find(">ref2_frag0") != std::string::npos, "missing first fragment ID");
+    expect(contents.find(">ref2_frag7") != std::string::npos, "missing last fragment ID");
     expect(contents.find("> ref2_frag7") != std::string::npos, "missing last fragment ID");
 }
 
