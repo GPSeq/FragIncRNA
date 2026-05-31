@@ -118,7 +118,7 @@ void test_fragmenter_writes_fragment_fasta_when_enabled()
 
     expect(contents.find(">ref2_frag0") != std::string::npos, "missing first fragment ID");
     expect(contents.find(">ref2_frag7") != std::string::npos, "missing last fragment ID");
-    expect(contents.find("> ref2_frag7") != std::string::npos, "missing last fragment ID");
+    //expect(contents.find("> ref2_frag7") != std::string::npos, "missing last fragment ID");
 }
 
 void test_fragmenter_rejects_too_small_fragment_size()
