@@ -1,0 +1,4 @@
+transcript_name	transcript_id	k_size	total_kmer_windows	matched_kmer_windows	matched_kmer_ratio	unique_kmers	unique_kmers_found	unique_kmer_ratio	reference_hit_sum
+HAR1A-201	ENST00000433161.2	37	1881	572	0.304094	1881	572	0.304094	572
+HAR1A-202	ENST00000806886.1	37	922	446	0.483731	922	446	0.483731	446
+HAR1A-203	ENST00000806887.1	37	841	447	0.53151	841	447	0.53151	447
