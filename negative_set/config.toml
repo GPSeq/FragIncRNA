@@ -1,0 +1,18 @@
+[general]
+# Supports .fa, .fna, .fasta, and gzip-compressed .fa.gz/.fna.gz/.fasta.gz.
+genome_file = "../genomes/H9T2Thap1_GCA_054883195.1_H9_T2T.hap1_genomic.fna.gz"
+output_dir = "negative_set_results"
+output_fasta = "negative_set.fasta"
+output_tsv = "negative_set.tsv"
+log_file = "negative_set.log"
+
+kmer_size = 25
+chromosome_count = 1
+sequence_count = 1000
+min_length = 850
+max_length = 1000
+seed = 42
+
+[ibf]
+hash_functions = 3
+fpr = 0.01

@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/mnt/d/primates_bmc/FragIncRNA/negative_set/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
