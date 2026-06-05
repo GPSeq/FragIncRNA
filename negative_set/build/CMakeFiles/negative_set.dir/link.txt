@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/negative_set.dir/src/main.cpp.o -o negative_set  -llncrna_mers_lib

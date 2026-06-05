@@ -1,3 +1,0 @@
-/mnt/d/primates_bmc/FragIncRNA/negative_set/build/CMakeFiles/negative_set.dir
-/mnt/d/primates_bmc/FragIncRNA/negative_set/build/CMakeFiles/edit_cache.dir
-/mnt/d/primates_bmc/FragIncRNA/negative_set/build/CMakeFiles/rebuild_cache.dir

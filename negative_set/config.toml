@@ -7,6 +7,7 @@ output_tsv = "negative_set.tsv"
 log_file = "negative_set.log"
 
 kmer_size = 25
+fragment_size = 9000000
 chromosome_count = 1
 sequence_count = 1000
 min_length = 850
@@ -15,4 +16,5 @@ seed = 42
 
 [ibf]
 hash_functions = 3
+# Flat IBF FPR is per chromosome-fragment bin.
 fpr = 0.01

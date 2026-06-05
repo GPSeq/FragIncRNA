@@ -1,0 +1,8 @@
+metric	value
+rows	1000.0
+mean_length	924.608
+mean_total_kmers	900.608
+mean_matched_positions	165.428
+mean_match_count	185.668
+mean_match_fraction	0.183647495
+max_match_fraction	0.242128

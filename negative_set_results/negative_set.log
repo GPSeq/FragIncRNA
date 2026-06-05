@@ -1,0 +1,10 @@
+[INFO] 2026-06-05 11:57:22 Starting negative_set.
+[INFO] 2026-06-05 11:57:22 Loaded config from: negative_set/config.toml
+[INFO] 2026-06-05 11:57:22 Using seed: 42
+[INFO] 2026-06-05 11:57:24 Loaded 1 chromosome record(s).
+[INFO] 2026-06-05 11:57:24 Sampled and shuffled 1000 sequence(s).
+[INFO] 2026-06-05 11:57:24 Selected chromosome(s) fragmented into 28 IBF bin(s) (len=9000000, overlap=3).
+[INFO] 2026-06-05 11:57:37 Built IBF for reference 'negative_set_chromosome_fragments' (28 bins, 111277205 bits per bin, 3 hash functions, target FPR=0.010000).
+[INFO] 2026-06-05 11:57:37 Negative FASTA written to: negative_set_results/negative_set.fasta
+[INFO] 2026-06-05 11:57:37 Negative TSV written to: negative_set_results/negative_set.tsv
+[INFO] 2026-06-05 11:57:37 negative_set finished successfully.

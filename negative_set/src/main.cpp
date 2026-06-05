@@ -38,6 +38,7 @@ struct NegativeSetConfig
     fs::path log_file{"negative_set.log"};
 
     std::size_t kmer_size{15};
+    std::size_t fragment_size{80000};
     std::size_t chromosome_count{1};
     std::size_t sequence_count{100};
     std::size_t min_length{80};
@@ -176,6 +177,12 @@ void validate_config(NegativeSetConfig const & cfg, fs::path const & config_path
     if (cfg.kmer_size == 0 || cfg.kmer_size > 32)
         throw std::runtime_error("Config key 'kmer_size' must be in the range [1, 32].");
 
+    if (cfg.fragment_size < 4)
+        throw std::runtime_error("Config key 'fragment_size' must be at least 4.");
+
+    if (cfg.kmer_size > cfg.fragment_size)
+        throw std::runtime_error("Config key 'kmer_size' must be <= 'fragment_size'.");
+
     if (cfg.chromosome_count == 0)
         throw std::runtime_error("Config key 'chromosome_count' must be at least 1.");
 
@@ -258,6 +265,8 @@ NegativeSetConfig load_negative_set_config(fs::path const & config_path)
             cfg.log_file = parse_string(key, value);
         else if (key == "kmer_size" || key == "general.kmer_size")
             cfg.kmer_size = parse_size_t(key, value);
+        else if (key == "fragment_size" || key == "general.fragment_size")
+            cfg.fragment_size = parse_size_t(key, value);
         else if (key == "chromosome_count" || key == "general.chromosome_count")
             cfg.chromosome_count = parse_size_t(key, value);
         else if (key == "sequence_count" || key == "general.sequence_count")
@@ -285,7 +294,7 @@ Config make_index_config(NegativeSetConfig const & cfg)
     Config index_cfg;
     index_cfg.index_method = IndexMethod::ibf;
     index_cfg.kmer_size = cfg.kmer_size;
-    index_cfg.fragment_size = cfg.max_length;
+    index_cfg.fragment_size = cfg.fragment_size;
     index_cfg.hit_threshold = 0;
     index_cfg.ibf = cfg.ibf;
     return index_cfg;
@@ -415,15 +424,44 @@ std::vector<Sample> sample_sequences(std::vector<Chromosome> const & chromosomes
     return samples;
 }
 
-std::vector<seqan3::dna5_vector> originals_for_index(std::vector<Sample> const & samples)
+std::vector<seqan3::dna5_vector>
+chromosome_fragment_bins_for_index(std::vector<Chromosome> const & chromosomes,
+                                   NegativeSetConfig const & cfg)
 {
-    std::vector<seqan3::dna5_vector> originals;
-    originals.reserve(samples.size());
+    std::vector<seqan3::dna5_vector> bins;
 
-    for (auto const & sample : samples)
-        originals.push_back(sample.original);
+    std::size_t const frag_len = cfg.fragment_size;
+    std::size_t const overlap = 3;
+    std::size_t const step = frag_len > overlap ? frag_len - overlap : 1;
 
-    return originals;
+    for (auto const & chromosome : chromosomes)
+    {
+        std::size_t const seq_len = chromosome.sequence.size();
+        std::size_t pos = 0;
+
+        while (pos < seq_len)
+        {
+            std::size_t const remaining = seq_len - pos;
+            std::size_t const len = remaining >= frag_len ? frag_len : remaining;
+
+            seqan3::dna5_vector fragment;
+            fragment.resize(len);
+            std::copy_n(chromosome.sequence.begin() + static_cast<std::ptrdiff_t>(pos),
+                        static_cast<std::ptrdiff_t>(len),
+                        fragment.begin());
+
+            bins.push_back(std::move(fragment));
+
+            if (remaining <= step)
+                break;
+            pos += step;
+        }
+    }
+
+    if (bins.empty())
+        throw std::runtime_error("No chromosome fragments were generated for the IBF.");
+
+    return bins;
 }
 
 std::uint64_t sum_counts(std::vector<std::size_t> const & counts)
@@ -470,7 +508,7 @@ void write_outputs(std::vector<Chromosome> const & chromosomes,
                                               : 0;
         std::uint64_t const matched_positions = count_nonzero(counts);
         std::uint64_t const match_count = sum_counts(counts);
-        double const match_fraction = total_kmers == 0 ? 0.0 : static_cast<double>(match_count) / total_kmers;
+        double const match_fraction = total_kmers == 0 ? 0.0 : static_cast<double>(matched_positions) / total_kmers;
 
         auto const id = output_id(sample);
         fasta_out.emplace_back(sample.shuffled, id);
@@ -504,7 +542,16 @@ int main(int argc, char ** argv)
         if (argc == 2)
             config_path = argv[1];
 
+        std::cout << "[DEV] Loading negative set config.." << '\n';
         auto cfg = load_negative_set_config(config_path);
+        std::cout << "Loaded config: " << '\n';
+        std::cout << "Genome file: " << cfg.genome_file << '\n';
+        std::cout << "Output fasta: " << cfg.output_fasta << '\n';
+        std::cout << "Negative K-mer size: " << cfg.kmer_size << '\n';
+        std::cout << "Fragment size: " << cfg.fragment_size << '\n';
+        std::cout << "Number of chromosomes: " << cfg.chromosome_count << '\n';
+        std::cout << "Number of sequences to generate: " << cfg.sequence_count << '\n';
+        std::cout << "Min-Max Length: " << cfg.min_length << " - " << cfg.max_length << '\n';
 
         fs::create_directories(cfg.output_dir);
         Logger::init((cfg.output_dir / cfg.log_file).string());
@@ -516,16 +563,23 @@ int main(int argc, char ** argv)
             seed = static_cast<std::uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count());
         std::mt19937_64 rng{seed};
         Logger::info("Using seed: " + std::to_string(seed));
+        std::cout << "[DEV] Mersenne twister random generator: " << rng << '\n';
 
         auto chromosomes = read_chromosomes(cfg.genome_file, cfg.chromosome_count);
+        for (auto const & chromosome : chromosomes)
+            std::cout << "[DEV] Read chromosome: " << chromosome.id << '\n';
         Logger::info("Loaded " + std::to_string(chromosomes.size()) + " chromosome record(s).");
 
         auto samples = sample_sequences(chromosomes, cfg, rng);
         Logger::info("Sampled and shuffled " + std::to_string(samples.size()) + " sequence(s).");
 
         auto index_cfg = make_index_config(cfg);
-        auto originals = originals_for_index(samples);
-        ReferenceIndexDna5 index{"negative_set_original_windows", originals, index_cfg};
+        auto chromosome_bins = chromosome_fragment_bins_for_index(chromosomes, cfg);
+        Logger::info("Selected chromosome(s) fragmented into " +
+                     std::to_string(chromosome_bins.size()) +
+                     " IBF bin(s) (len=" + std::to_string(cfg.fragment_size) +
+                     ", overlap=3).");
+        ReferenceIndexDna5 index{"negative_set_chromosome_fragments", chromosome_bins, index_cfg};
 
         write_outputs(chromosomes, samples, index, cfg);
         Logger::info("negative_set finished successfully.");
