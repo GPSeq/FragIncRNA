@@ -77,6 +77,8 @@ target_link_libraries(lncrna_mers
         lncrna_mers_lib
 )
 
+add_subdirectory(negative_set)
+
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
     CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(lncrna_mers_lib PRIVATE -Wall -Wextra -Wpedantic)
