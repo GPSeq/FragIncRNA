@@ -12,14 +12,14 @@ import argparse
 import os
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/matplotlib-cache")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import MaxNLocator, PercentFormatter
 
 
 BLUE = "#2F6C9E"
@@ -232,10 +232,6 @@ def human_number(value: float, _position: int | None = None) -> str:
     return f"{value:.0f}"
 
 
-def percent_label(value: float, _position: int | None = None) -> str:
-    return f"{value * 100:.4f}"
-
-
 def style_axis(ax: plt.Axes, grid_axis: str = "y") -> None:
     ax.grid(axis=grid_axis, color=LIGHT_GRID, linewidth=0.7)
     ax.set_axisbelow(True)
@@ -269,10 +265,9 @@ def plot_retention_panel(ax: plt.Axes, plot_summary: pd.DataFrame) -> None:
     ax.scatter(x, y, color="white", edgecolor=BLUE, linewidth=1.2, s=28, zorder=3)
     ax.set_xlabel("k-mer size")
     ax.set_ylabel("All-genome retained transcripts (%)")
-    ax.yaxis.set_major_formatter(FuncFormatter(percent_label))
-
-    ymin = max(0.99996, y.min() - 0.000005)
-    ax.set_ylim(ymin, 1.000002)
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.margins(y=0.1)
     ax.set_xticks(x)
     ax.set_title("Transcript retention by k-mer size")
     style_axis(ax)
@@ -305,7 +300,7 @@ def plot_edge_case_bars(ax: plt.Axes, plot_summary: pd.DataFrame) -> None:
     ax.set_ylabel("Transcripts")
     ax.set_title("Transcript edge-case classes")
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
-    ax.legend(loc="upper left")
+    ax.legend(loc="upper right")
     style_axis(ax)
     add_panel_label(ax, "b")
 
@@ -409,13 +404,13 @@ def make_main_figure(
     outdir: Path,
     prefix: str,
 ) -> None:
-    fig = plt.figure(figsize=(12.3, 8.2))
+    fig = plt.figure(figsize=(14.5, 8.2))
     grid = fig.add_gridspec(
         2,
         2,
         width_ratios=[1.0, 1.15],
         height_ratios=[1.0, 1.1],
-        wspace=0.33,
+        wspace=0.62,
         hspace=0.38,
     )
 

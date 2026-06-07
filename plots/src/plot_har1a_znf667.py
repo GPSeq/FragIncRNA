@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+#python  plots/src/plot_har1a_znf667.py --kmer ./kmer_results/ibf_new/qc/kmer_transcript_pass_counts_by_k.tsv --alignment alignment_results/lncRNA_transcript_pass_counts.tsv --outdir ./alignment_vs_kmers
+
 import argparse
 import os
 from pathlib import Path
@@ -12,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_KMER = "kmers_comparison/qc/kmer_transcript_pass_counts_by_k.tsv"
+DEFAULT_KMER = "./kmer_results/ibf_new/qc/kmer_transcript_pass_counts_by_k.tsv"
 DEFAULT_ALIGNMENT = "FragIncRNA/alignment_results/lncRNA_transcript_pass_counts.tsv"
 DEFAULT_OUTDIR = "HOR1_ZNF667_results"
 GENES = ["HAR1A", "ZNF667-AS1"]
@@ -336,7 +338,7 @@ def plot_kmer_robustness(ax: plt.Axes, kmer_df: pd.DataFrame) -> None:
     ax.set_title("K-mer matched ratio across k sizes", pad=10)
     ax.set_xlabel("k-mer size")
     ax.set_ylabel("Mean matched k-mer ratio")
-    ax.set_ylim(0.985, 1.002)
+    ax.margins(y=0.1)
     ax.set_xticks(sorted(kmer_df["k_size"].unique()))
     ax.legend(frameon=False, fontsize=9, loc="lower left")
     style_axis(ax)
