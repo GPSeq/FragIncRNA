@@ -1,0 +1,6 @@
+k_size	total_transcripts	total_unique_gene_names	genome_count	strict_threshold	basic_threshold	strict_shared_transcripts_all_genomes	basic_shared_transcripts_all_genomes	strict_shared_unique_gene_names	basic_shared_unique_gene_names
+15	197211	36994	11	0.85	0.75	95150	182890	22840	34805
+18	197211	36994	11	0.85	0.75	26955	38847	5489	8223
+20	197211	36994	11	0.85	0.75	24128	36567	5115	7489
+22	197211	36994	11	0.85	0.75	22373	35378	4872	7166
+24	197211	36994	11	0.85	0.75	20641	34388	4660	6894
