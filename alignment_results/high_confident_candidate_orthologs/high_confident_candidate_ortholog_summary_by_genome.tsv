@@ -1,0 +1,12 @@
+genome	total_transcripts	high_confident_transcripts	high_confident_percent	high_confident_unique_genes
+human_lncRNA_vs_Clintptrv2	197211	177989	90.25	36134
+human_lncRNA_vs_H9T2Thap1	197211	186804	94.72	36674
+human_lncRNA_vs_H9T2Thap2	197211	186954	94.80	36686
+human_lncRNA_vs_MhudibluPPAv0	197211	178433	90.48	36008
+human_lncRNA_vs_Mmul10	197211	143584	72.81	31484
+human_lncRNA_vs_T2TMMU8v20	197211	144467	73.26	31563
+human_lncRNA_vs_mPanPan1v20pri	197211	179558	91.05	36038
+human_lncRNA_vs_mPanTro3v20pri	197211	179812	91.18	36158
+human_lncRNA_vs_matHPRCF2	197211	186266	94.45	36573
+human_lncRNA_vs_panpan11	197211	164580	83.45	35083
+human_lncRNA_vs_patHPRCf2	197211	186671	94.66	36638

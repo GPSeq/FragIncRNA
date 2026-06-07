@@ -1,0 +1,8 @@
+metric	value
+minimum_query_coverage_pct	90
+minimum_identity_pct	90
+minimum_mapq	30
+genome_count	11
+total_transcripts	197211
+high_confident_all_genomes_transcripts	126476
+high_confident_all_genomes_unique_genes	29050
