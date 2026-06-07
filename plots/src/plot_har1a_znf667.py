@@ -190,7 +190,7 @@ def plot_alignment_heatmap(
             ax.text(j, i, text, ha="center", va="center", fontsize=8, color=color)
     cbar = plt.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
     cbar.set_label("Fraction strict")
-    add_panel_label(ax, "A")
+    add_panel_label(ax, "a")
 
 
 def transcript_method_summary(
@@ -299,7 +299,7 @@ def plot_alignment_vs_kmer_bars(ax: plt.Axes, summary: pd.DataFrame) -> None:
     ax.invert_yaxis()
     ax.legend(frameon=False, fontsize=8, loc="upper right")
     style_axis(ax, xgrid=True, ygrid=False)
-    add_panel_label(ax, "B")
+    add_panel_label(ax, "b")
 
 
 def plot_kmer_robustness(ax: plt.Axes, kmer_df: pd.DataFrame) -> None:
@@ -342,7 +342,7 @@ def plot_kmer_robustness(ax: plt.Axes, kmer_df: pd.DataFrame) -> None:
     ax.set_xticks(sorted(kmer_df["k_size"].unique()))
     ax.legend(frameon=False, fontsize=9, loc="lower left")
     style_axis(ax)
-    add_panel_label(ax, "C")
+    add_panel_label(ax, "c")
 
 
 def status_count_table(
@@ -406,7 +406,7 @@ def plot_status_composition(ax: plt.Axes, status_counts: pd.DataFrame) -> None:
         ncol=4,
     )
     style_axis(ax, xgrid=True, ygrid=False)
-    add_panel_label(ax, "D")
+    add_panel_label(ax, "d")
 
 
 def save_outputs(
