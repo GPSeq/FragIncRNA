@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <limits>
@@ -89,6 +90,69 @@ std::vector<std::size_t> count_hits_with_flat_ibf(seqan3::interleaved_bloom_filt
     return counts;
 }
 
+std::vector<std::size_t> count_hits_with_flat_ibfs(
+    std::vector<std::unique_ptr<seqan3::interleaved_bloom_filter<>>> const & ibfs,
+    auto const & seq,
+    std::size_t const kmer_size)
+{
+    std::vector<std::size_t> total_counts;
+
+    for (auto const & ibf : ibfs)
+    {
+        auto counts = count_hits_with_flat_ibf(*ibf, seq, kmer_size);
+        if (total_counts.empty())
+        {
+            total_counts = std::move(counts);
+            continue;
+        }
+
+        if (counts.size() != total_counts.size())
+            throw std::runtime_error{"Internal error: inconsistent multi-IBF query count lengths."};
+
+        for (std::size_t i = 0; i < total_counts.size(); ++i)
+            total_counts[i] += counts[i];
+    }
+
+    return total_counts;
+}
+
+template <typename sequence_t>
+std::vector<sequence_t> split_fragment_for_multi_ibf(sequence_t const & fragment, Config const & cfg)
+{
+    std::vector<sequence_t> bins;
+    if (fragment.empty())
+        return bins;
+
+    std::size_t const kmer_size = std::max<std::size_t>(cfg.kmer_size, 1u);
+    std::size_t const estimated_kmers =
+        fragment.size() >= kmer_size ? fragment.size() - kmer_size + 1 : 1u;
+    std::size_t const desired_bins =
+        std::max<std::size_t>(1u, static_cast<std::size_t>(std::ceil(std::sqrt(estimated_kmers))));
+    std::size_t const target_len =
+        std::max<std::size_t>(kmer_size, (fragment.size() + desired_bins - 1) / desired_bins);
+    std::size_t const overlap = kmer_size > 0 ? kmer_size - 1 : 0;
+    std::size_t const step = target_len > overlap ? target_len - overlap : 1u;
+
+    for (std::size_t pos = 0; pos < fragment.size();)
+    {
+        std::size_t const remaining = fragment.size() - pos;
+        std::size_t const len = std::min<std::size_t>(target_len, remaining);
+
+        sequence_t bin;
+        bin.resize(len);
+        std::copy_n(fragment.begin() + static_cast<std::ptrdiff_t>(pos),
+                    static_cast<std::ptrdiff_t>(len),
+                    bin.begin());
+        bins.push_back(std::move(bin));
+
+        if (remaining <= step)
+            break;
+        pos += step;
+    }
+
+    return bins;
+}
+
 #if defined(LNCRNA_MERS_HAS_HIBF)
 /*
 * @fn count_hits_with_hibf
@@ -150,7 +214,10 @@ ReferenceIndex<sequence_t>::ReferenceIndex(std::string ref_name,
 
     if (cfg_.index_method == IndexMethod::ibf)
     {
-        build_ibf(fragments);
+        if (cfg_.ibf.multi_indexing)
+            build_multi_ibf(fragments);
+        else
+            build_ibf(fragments);
     }
 #if defined(LNCRNA_MERS_HAS_HIBF)
     else
@@ -202,7 +269,11 @@ template <typename sequence_t>
 std::vector<std::size_t> ReferenceIndex<sequence_t>::count_query_kmer_hits(sequence_t const & seq) const
 {
     if (cfg_.index_method == IndexMethod::ibf)
+    {
+        if (cfg_.ibf.multi_indexing)
+            return count_hits_with_flat_ibfs(ibfs_, seq, cfg_.kmer_size);
         return count_hits_with_flat_ibf(*ibf_, seq, cfg_.kmer_size);
+    }
 
 #if defined(LNCRNA_MERS_HAS_HIBF)
     return count_hits_with_hibf(*hibf_, seq, cfg_.kmer_size);
@@ -225,6 +296,26 @@ std::string ReferenceIndex<sequence_t>::index_file_suffix() const
     return cfg_.index_method == IndexMethod::ibf ? ".ibf" : ".hibf";
 }
 
+template <typename sequence_t>
+std::vector<std::filesystem::path>
+ReferenceIndex<sequence_t>::index_file_paths(std::filesystem::path const & base_path) const
+{
+    if (cfg_.index_method != IndexMethod::ibf || !cfg_.ibf.multi_indexing)
+        return {base_path};
+
+    std::vector<std::filesystem::path> paths;
+    paths.reserve(ibfs_.size());
+
+    auto const parent = base_path.parent_path();
+    auto const stem = base_path.stem().string();
+    auto const suffix = index_file_suffix();
+
+    for (std::size_t i = 0; i < ibfs_.size(); ++i)
+        paths.push_back(parent / (stem + "_multi_" + std::to_string(i) + suffix));
+
+    return paths;
+}
+
 /*
 * @fn store_to
 * @brief Serializes the selected index to a binary archive file.
@@ -236,21 +327,102 @@ std::string ReferenceIndex<sequence_t>::index_file_suffix() const
 template <typename sequence_t>
 void ReferenceIndex<sequence_t>::store_to(std::filesystem::path const & out_path) const
 {
-    std::ofstream os(out_path, std::ios::binary);
-    if (!os)
-        throw std::runtime_error{"Failed to open index output file: " + out_path.string()};
-
-    cereal::BinaryOutputArchive archive(os);
-
     if (cfg_.index_method == IndexMethod::ibf)
+    {
+        if (cfg_.ibf.multi_indexing)
+        {
+            auto const paths = index_file_paths(out_path);
+            for (std::size_t i = 0; i < ibfs_.size(); ++i)
+            {
+                std::ofstream os(paths[i], std::ios::binary);
+                if (!os)
+                    throw std::runtime_error{"Failed to open index output file: " + paths[i].string()};
+
+                cereal::BinaryOutputArchive archive(os);
+                archive(*ibfs_[i]);
+            }
+            return;
+        }
+
+        std::ofstream os(out_path, std::ios::binary);
+        if (!os)
+            throw std::runtime_error{"Failed to open index output file: " + out_path.string()};
+
+        cereal::BinaryOutputArchive archive(os);
         archive(*ibf_);
+    }
 #if defined(LNCRNA_MERS_HAS_HIBF)
     else
+    {
+        std::ofstream os(out_path, std::ios::binary);
+        if (!os)
+            throw std::runtime_error{"Failed to open index output file: " + out_path.string()};
+
+        cereal::BinaryOutputArchive archive(os);
         archive(*hibf_);
+    }
 #else
     else
         throw std::runtime_error("This build does not include HIBF support.");
 #endif
+}
+
+template <typename sequence_t>
+void ReferenceIndex<sequence_t>::build_multi_ibf(std::vector<sequence_t> const & fragments)
+{
+    using seqan3::bin_count;
+    using seqan3::bin_index;
+    using seqan3::bin_size;
+    using seqan3::hash_function_count;
+
+    std::size_t max_len = 0;
+    for (auto const & f : fragments)
+        max_len = std::max<std::size_t>(max_len, f.size());
+
+    if (cfg_.kmer_size == 0 || cfg_.kmer_size > max_len)
+        throw std::runtime_error{
+            "kmer_size must be > 0 and <= maximum fragment length for reference '" + ref_name_ + "'."};
+
+    auto hash_view = seqan3::views::kmer_hash(seqan3::ungapped{static_cast<uint8_t>(cfg_.kmer_size)});
+    ibfs_.reserve(fragments.size());
+
+    std::size_t total_bins = 0;
+    for (auto const & fragment : fragments)
+    {
+        auto bins = split_fragment_for_multi_ibf(fragment, cfg_);
+        if (bins.empty())
+            bins.push_back(fragment);
+
+        std::size_t max_bin_len = 0;
+        for (auto const & bin : bins)
+            max_bin_len = std::max<std::size_t>(max_bin_len, bin.size());
+
+        auto const bin_bits = max_bin_len < cfg_.kmer_size ? 1024u : compute_flat_bin_bits(bins, cfg_, ref_name_);
+        auto ibf = std::make_unique<seqan3::interleaved_bloom_filter<>>(
+            bin_count{bins.size()},
+            bin_size{bin_bits},
+            hash_function_count{cfg_.ibf.hash_functions}
+        );
+
+        std::size_t bin_idx = 0;
+        for (auto const & bin : bins)
+        {
+            for (auto const hash : bin | hash_view)
+                ibf->emplace(static_cast<uint64_t>(hash), bin_index{bin_idx});
+            ++bin_idx;
+        }
+
+        total_bins += bins.size();
+        ibfs_.push_back(std::move(ibf));
+    }
+
+    Logger::print_stdout("Built multi-IBF for reference '" + ref_name_ + "'", true);
+    Logger::info("Built multi-IBF for reference '" + ref_name_ + "' (" +
+                 std::to_string(ibfs_.size()) + " IBFs from " +
+                 std::to_string(fragments.size()) + " fragments, " +
+                 std::to_string(total_bins) + " total bins, " +
+                 std::to_string(cfg_.ibf.hash_functions) + " hash functions, " +
+                 "target FPR=" + std::to_string(cfg_.ibf.fpr) + ").");
 }
 
 /*

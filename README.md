@@ -150,6 +150,7 @@ single_results_writer = false
 [ibf]
 hash_functions = 3
 fpr = 0.01
+multi_indexing = false
 
 [hibf]
 hash_functions = 2
@@ -194,6 +195,7 @@ IBF-specific keys:
 
 - `ibf.hash_functions`: number of IBF hash functions; valid range `1..32`
 - `ibf.fpr`: target false positive rate per bin; must be in `(0, 0.5]`
+- `ibf.multi_indexing`: when `true`, builds one flat IBF per reference fragment, splits each fragment into near-equal sub-bins, stores the `.ibf` files in `output_dir` while searching, and removes them after that reference is processed
 
 HIBF-specific keys:
 

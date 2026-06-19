@@ -212,6 +212,7 @@ void test_config_loader_reads_sectioned_toml()
                "[ibf]\n"
                "hash_functions = 3\n"
                "fpr = 0.01\n"
+               "multi_indexing = true\n"
                "\n"
                "[hibf]\n"
                "hash_functions = 2\n"
@@ -238,10 +239,42 @@ void test_config_loader_reads_sectioned_toml()
     expect(cfg.single_results_writer == true, "unexpected single_results_writer");
     expect(cfg.ibf.hash_functions == 3, "unexpected ibf.hash_functions");
     expect(cfg.ibf.fpr == 0.01, "unexpected ibf.fpr");
+    expect(cfg.ibf.multi_indexing == true, "unexpected ibf.multi_indexing");
     expect(cfg.hibf.hash_functions == 2, "unexpected hibf.hash_functions");
     expect(cfg.hibf.maximum_fpr == 0.05, "unexpected hibf.maximum_fpr");
     expect(cfg.hibf.relaxed_fpr == 0.30, "unexpected hibf.relaxed_fpr");
     expect(cfg.hibf.threads == 4, "unexpected hibf.threads");
+}
+
+void test_multi_ibf_stores_one_file_per_fragment_and_counts_hits()
+{
+    auto temp_dir = make_temp_dir("lncrna_mers_test_multi_ibf");
+
+    Config cfg;
+    cfg.kmer_size = 3;
+    cfg.ibf.hash_functions = 2;
+    cfg.ibf.fpr = 0.01;
+    cfg.ibf.multi_indexing = true;
+    cfg.output_dir = temp_dir;
+
+    std::vector<seqan3::dna5_vector> fragments{
+        seqan3::dna5_vector{"ACGTACGT"_dna5},
+        seqan3::dna5_vector{"TTTACGTA"_dna5}
+    };
+
+    ReferenceIndexDna5 index{"ref7", fragments, cfg};
+    auto base_path = temp_dir / "ref7.ibf";
+    auto paths = index.index_file_paths(base_path);
+
+    expect(paths.size() == fragments.size(), "expected one serialized IBF path per fragment");
+
+    index.store_to(base_path);
+    for (auto const & path : paths)
+        expect(fs::exists(path), "expected multi-IBF file to be created");
+
+    auto counts = index.count_query_kmer_hits(seqan3::dna5_vector{"ACGTAC"_dna5});
+    expect(counts.size() == 4, "unexpected multi-IBF count vector length");
+    expect(!counts.empty() && counts[0] > 0, "expected multi-IBF to report hits");
 }
 
 void test_config_loader_rejects_missing_required_key()
@@ -319,6 +352,7 @@ int main()
         test_reference_index_reports_fragment_count_as_bin_count();
         test_config_loader_reads_sectioned_toml();
         test_config_loader_rejects_missing_required_key();
+        test_multi_ibf_stores_one_file_per_fragment_and_counts_hits();
         test_query_processor_writes_matching_kmer_hit_file();
     }
     catch (std::exception const & ex)

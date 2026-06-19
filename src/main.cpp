@@ -157,6 +157,21 @@ int main(int argc, char ** argv)
 
                 ReferenceIndex<sequence_t> ref_index{ref_id, fragments, cfg};
 
+                auto const index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
+                bool const multi_ibf_index =
+                    cfg.index_method == IndexMethod::ibf && cfg.ibf.multi_indexing;
+                bool const should_store_index = cfg.store_index || multi_ibf_index;
+                bool const should_cleanup_index = (cfg.cleanup_index && cfg.store_index) || multi_ibf_index;
+
+                if (should_store_index)
+                {
+                    ref_index.store_to(index_path);
+                    auto const stored_paths = ref_index.index_file_paths(index_path);
+                    Logger::info("Stored " + std::to_string(stored_paths.size()) +
+                                 " index file(s) for reference '" + ref_id +
+                                 "' under: " + cfg.output_dir.string());
+                }
+
                 QueryProcessor<sequence_t> qp{cfg, ref_index, ref_id};
 
                 if (cfg.single_results_writer)
@@ -171,27 +186,20 @@ int main(int argc, char ** argv)
                     qp.run_write_per_ibf(out_path);
                 }
 
-                // Delete IBF on disk immediately after use, if requested
-                if (cfg.store_index)
+                if (should_cleanup_index)
                 {
-                    auto index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
-                    ref_index.store_to(index_path);
-                    Logger::info("Stored index for reference '" + ref_id +
-                                 "' to file: " + index_path.string());
-                }
-
-                if (cfg.cleanup_index && cfg.store_index)
-                {
-                    auto index_path = cfg.output_dir / (ref_id + ref_index.index_file_suffix());
-                    std::error_code ec;
-                    if (fs::exists(index_path, ec))
+                    for (auto const & stored_path : ref_index.index_file_paths(index_path))
                     {
-                        fs::remove(index_path, ec);
-                        if (!ec)
-                            Logger::info("Removed index file: " + index_path.string());
-                        else
-                            Logger::warn("Failed to remove index file: " + index_path.string() +
-                                         " (" + ec.message() + ")");
+                        std::error_code ec;
+                        if (fs::exists(stored_path, ec))
+                        {
+                            fs::remove(stored_path, ec);
+                            if (!ec)
+                                Logger::info("Removed index file: " + stored_path.string());
+                            else
+                                Logger::warn("Failed to remove index file: " + stored_path.string() +
+                                             " (" + ec.message() + ")");
+                        }
                     }
                 }
             };
