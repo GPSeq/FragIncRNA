@@ -9,7 +9,7 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create a publication-ready multi-panel plot from shared_lncRNA_overlap_summary.tsv."
+        description="Create a multi-panel plot from shared_lncRNA_overlap_summary.tsv."
     )
     parser.add_argument(
         "--input-summary",

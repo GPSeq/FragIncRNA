@@ -34,7 +34,7 @@ LIGHT_GRID = "#E8E8E8"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create publication-ready plots from summarize_kmer_comparison_qc.sh outputs."
+            "Create  plots from summarize_kmer_comparison_qc.sh outputs."
         )
     )
     parser.add_argument(

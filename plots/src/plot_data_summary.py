@@ -39,7 +39,7 @@ class FastaStats:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create publication-ready summary plots and a TSV for genome FASTA "
+            "Create  summary plots and a TSV for genome FASTA "
             "references and a GENCODE lncRNA transcript FASTA."
         )
     )
