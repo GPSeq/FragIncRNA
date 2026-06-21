@@ -1,0 +1,2 @@
+k_size	kmer_mode	total_transcripts	alignment_high_confident_all	kmer_all_genomes	overlap	alignment_only	kmer_only	neither	overlap_fraction_of_alignment	overlap_fraction_of_kmer	jaccard_index
+24	strict	197211	126476	20641	14971	111505	5670	65065	0.11837028369018628	0.7253040065888281	0.11329135955685378

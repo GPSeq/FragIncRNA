@@ -1,0 +1,12 @@
+genome	total_transcripts	high_confident_transcripts	high_confident_percent	high_confident_unique_genes	assembly	species	display_name	quality_class	n_percent
+human_lncRNA_vs_H9T2Thap2	197211	186954	94.8	36686	H9T2Thap2	Human	T2T/H9 hap2	high	0.012825
+human_lncRNA_vs_H9T2Thap1	197211	186804	94.72	36674	H9T2Thap1	Human	T2T/H9 hap1	high	0.010114
+human_lncRNA_vs_patHPRCf2	197211	186671	94.66	36638	patHPRCf2	Human	HPRC paternal	high	0.05243
+human_lncRNA_vs_matHPRCF2	197211	186266	94.45	36573	matHPRCF2	Human	HPRC maternal	high	0.048982
+human_lncRNA_vs_mPanTro3v20pri	197211	179812	91.18	36158	mPanTro3v20pri	Chimpanzee	T2T/primary	high	0.157344
+human_lncRNA_vs_Clintptrv2	197211	177989	90.25	36134	Clintptrv2	Chimpanzee	Clint PTRv2	reference	1.042654
+human_lncRNA_vs_mPanPan1v20pri	197211	179558	91.05	36038	mPanPan1v20pri	Bonobo	T2T/primary	high	0.155166
+human_lncRNA_vs_MhudibluPPAv0	197211	178433	90.48	36008	MhudibluPPAv0	Bonobo	Mhudiblu PPA	reference	1.197648
+human_lncRNA_vs_panpan11	197211	164580	83.45	35083	panpan11	Bonobo	panpan1.1	reference	17.061596
+human_lncRNA_vs_T2TMMU8v20	197211	144467	73.26	31563	T2TMMU8v20	Rhesus macaque	T2T-MMU8	high	0.0
+human_lncRNA_vs_Mmul10	197211	143584	72.81	31484	Mmul10	Rhesus macaque	Mmul_10	reference	1.159036

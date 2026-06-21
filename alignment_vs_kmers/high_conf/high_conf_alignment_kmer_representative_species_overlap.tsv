@@ -1,0 +1,5 @@
+genome	assembly	species	display_name	quality_class	total_transcripts	alignment_high_confident_transcripts	kmer_pass_transcripts	overlap_transcripts	overlap_percent_total	overlap_unique_genes	n_percent
+human_lncRNA_vs_H9T2Thap2	H9T2Thap2	Human	T2T/H9 hap2	high	197211	186954	197202	186947	94.79542216204977	36683	0.012825
+human_lncRNA_vs_mPanTro3v20pri	mPanTro3v20pri	Chimpanzee	T2T/primary	high	197211	179812	197198	179802	91.17239910552657	36156	0.157344
+human_lncRNA_vs_mPanPan1v20pri	mPanPan1v20pri	Bonobo	T2T/primary	high	197211	179558	197197	179546	91.04258890224176	36031	0.155166
+human_lncRNA_vs_T2TMMU8v20	T2TMMU8v20	Rhesus macaque	T2T-MMU8	high	197211	144467	197186	144456	73.2494637723048	31560	0.0
