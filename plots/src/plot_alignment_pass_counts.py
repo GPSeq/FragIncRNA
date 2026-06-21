@@ -7,6 +7,9 @@ from typing import Iterable
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -226,6 +229,7 @@ def plot_transcript_result_sets(
     ax: plt.Axes,
     df: pd.DataFrame,
     status_cols: list[str],
+    panel_label: str = "a",
 ) -> None:
     genome_count = int(df["genome_count"].max())
     strict_shared = df["strict_pass_count"].eq(genome_count)
@@ -245,7 +249,7 @@ def plot_transcript_result_sets(
     ax.set_title("Transcript-level result sets")
     ax.set_ylabel("Transcripts")
     ax.bar_label(bars, padding=3, fontsize=8)
-    add_panel_label(ax, "a")
+    add_panel_label(ax, panel_label)
     style_axis(ax)
 
 
@@ -254,6 +258,7 @@ def plot_unique_gene_counts(
     df: pd.DataFrame,
     gene_summary: pd.DataFrame,
     status_cols: list[str],
+    panel_label: str = "b",
 ) -> None:
     unmapped_all = df[status_cols].eq("UNMAPPED").all(axis=1)
 
@@ -271,7 +276,7 @@ def plot_unique_gene_counts(
     ax.set_title("Unique gene names associated with transcripts")
     ax.set_ylabel("Unique gene names")
     ax.bar_label(bars, padding=3, fontsize=8)
-    add_panel_label(ax, "b")
+    add_panel_label(ax, panel_label)
     style_axis(ax)
 
 
@@ -551,19 +556,25 @@ def plot_combined_paper_figure(
     outdir: Path,
     top_n: int,
 ) -> None:
-    fig = plt.figure(figsize=(15, 11.5))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.55], hspace=0.35, wspace=0.28)
+    fig = plt.figure(figsize=(15, 5.8))
+    gs = fig.add_gridspec(1, 2, width_ratios=[0.78, 1.45], wspace=0.3)
 
-    ax_a = fig.add_subplot(gs[0, 0])
+    ax_a = fig.add_subplot(gs[0])
     plot_transcript_result_sets(ax_a, df, status_cols)
 
-    ax_b = fig.add_subplot(gs[0, 1])
-    plot_unique_gene_counts(ax_b, df, gene_summary, status_cols)
+    draw_upset_panel(fig, gs[1], strict_table, status_cols, "strict", top_n, "b")
 
-    draw_upset_panel(fig, gs[1, 0], strict_table, status_cols, "strict", top_n, "c")
-    draw_upset_panel(fig, gs[1, 1], basic_table, status_cols, "basic", top_n, "d")
+    savefig(fig, outdir / "figure4_ac")
 
-    savefig(fig, outdir / "alignment_results_overview")
+    fig = plt.figure(figsize=(15, 5.8))
+    gs = fig.add_gridspec(1, 2, width_ratios=[0.78, 1.45], wspace=0.3)
+
+    ax_b = fig.add_subplot(gs[0])
+    plot_unique_gene_counts(ax_b, df, gene_summary, status_cols, "A")
+
+    draw_upset_panel(fig, gs[1], basic_table, status_cols, "basic", top_n, "B")
+
+    savefig(fig, outdir / "figure_bd")
 
 
 def main() -> None:

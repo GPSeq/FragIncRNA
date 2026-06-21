@@ -6,6 +6,9 @@ from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -43,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--genes",
-        default="HOTAIR,MALAT,XIST,NEAT,MIAT",
+        default="HOTAIR,MALAT,XIST,NEAT,MIAT,HAR1A,ZNF667-AS1",
         help=(
             "Comma-separated gene names to plot. MALAT is treated as MALAT1 "
             "and NEAT as NEAT1 by default."

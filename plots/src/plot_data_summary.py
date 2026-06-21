@@ -252,6 +252,48 @@ def human_number(value: float, _position: int | None = None) -> str:
     return f"{value:.0f}"
 
 
+SPECIES_ORDER = {
+    "human": 0,
+    "chimpanzee": 1,
+    "bonobo": 2,
+    "rhesus macaque": 3,
+    "other": 4,
+}
+
+
+def species_group(stat: FastaStats) -> str:
+    label = stat.label.lower()
+    source = stat.path.name.lower().replace("\\", "/")
+    text = f"{label} {source}"
+
+    if any(token in text for token in ("hprc", "h9", "na19240")):
+        return "human"
+    if any(token in text for token in ("pantro", "ptr", "clint")):
+        return "chimpanzee"
+    if any(token in text for token in ("panpan", "ppa", "hudiblu")):
+        return "bonobo"
+    if any(token in text for token in ("mmul", "mmu8", "rhesus", "macaca")):
+        return "rhesus macaque"
+    return "other"
+
+
+def phylogenetic_sort_key(stat: FastaStats) -> tuple[int, str]:
+    group = species_group(stat)
+    return SPECIES_ORDER[group], stat.label.lower()
+
+
+def grouped_phylogenetic_rows(genome_stats: list[FastaStats]) -> list[tuple[str, FastaStats | None]]:
+    rows: list[tuple[str, FastaStats | None]] = []
+    current_group = ""
+    for stat in sorted(genome_stats, key=phylogenetic_sort_key):
+        group = species_group(stat)
+        if group != current_group:
+            rows.append((group.title(), None))
+            current_group = group
+        rows.append((f"  {stat.label}", stat))
+    return rows
+
+
 def save_figure(fig, output_base: Path) -> None:
     fig.savefig(output_base.with_suffix(".png"), dpi=400, bbox_inches="tight")
     fig.savefig(output_base.with_suffix(".pdf"), bbox_inches="tight")
@@ -274,8 +316,8 @@ def make_summary_plot(output_dir: Path, genome_stats: list[FastaStats], lncrna_s
         }
     )
 
-    sorted_by_name = sorted(genome_stats, key=lambda stat: stat.label.lower())
-    figure_height = max(4.6, 0.26 * len(sorted_by_name) + 2.2)
+    phylogeny_rows = grouped_phylogenetic_rows(genome_stats)
+    figure_height = max(4.8, 0.26 * len(phylogeny_rows) + 2.2)
     fig, axes = plt.subplots(
         1,
         2,
@@ -300,19 +342,28 @@ def make_summary_plot(output_dir: Path, genome_stats: list[FastaStats], lncrna_s
     ax.text(-0.18, 1.05, "a", transform=ax.transAxes, fontsize=14, fontweight="bold", va="top")
 
     ax = axes[1]
-    labels = [stat.label for stat in sorted_by_name]
-    values = [stat.records for stat in sorted_by_name]
-    y_positions = range(len(sorted_by_name))
-    ax.barh(y_positions, values, color="#66CCEE", edgecolor="#334E5C", linewidth=0.45)
-    ax.set_yticks(list(y_positions), labels=labels)
+    labels = [label for label, _stat in phylogeny_rows]
+    bar_positions = [index for index, (_label, stat) in enumerate(phylogeny_rows) if stat is not None]
+    values = [stat.records for _label, stat in phylogeny_rows if stat is not None]
+    ax.barh(bar_positions, values, color="#66CCEE", edgecolor="#334E5C", linewidth=0.45)
+    ax.set_yticks(list(range(len(phylogeny_rows))), labels=labels)
+    for tick_label, (_label, stat) in zip(ax.get_yticklabels(), phylogeny_rows):
+        if stat is None:
+            tick_label.set_fontweight("bold")
+            tick_label.set_fontsize(8.5)
+        else:
+            tick_label.set_fontsize(8)
     ax.invert_yaxis()
     ax.set_xlabel("Chromosomes/FASTA records")
-    ax.set_title("Reference composition", pad=10)
+    ax.set_title("Reference composition by phylogenetic group", pad=10)
     ax.xaxis.set_major_formatter(FuncFormatter(human_number))
     max_value = max(values) if values else 0
     ax.set_xlim(0, max_value * 1.12 if max_value else 1)
-    for y_position, value in zip(y_positions, values):
+    for y_position, value in zip(bar_positions, values):
         ax.text(value + max(max_value * 0.01, 0.5), y_position, f"{value:,}", va="center", fontsize=7)
+    for index, (_label, stat) in enumerate(phylogeny_rows):
+        if stat is None and index > 0:
+            ax.axhline(index - 0.5, color="#BBBBBB", linewidth=0.6, zorder=0)
     ax.text(-0.14, 1.05, "b", transform=ax.transAxes, fontsize=14, fontweight="bold", va="top")
 
     fig.suptitle("Genome reference and lncRNA transcript summary", fontsize=12, y=0.995)
