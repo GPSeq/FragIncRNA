@@ -89,6 +89,9 @@ public:
     */
     [[nodiscard]] std::string index_file_suffix() const;
 
+    [[nodiscard]] std::vector<std::filesystem::path>
+    index_file_paths(std::filesystem::path const & base_path) const;
+
     /*
     * @fn store_to
     * @brief Serializes the selected index to a binary archive file.
@@ -105,6 +108,7 @@ private:
     std::size_t user_bin_count_{0};
 
     std::unique_ptr<seqan3::interleaved_bloom_filter<>> ibf_;
+    std::vector<std::unique_ptr<seqan3::interleaved_bloom_filter<>>> ibfs_;
 #if defined(LNCRNA_MERS_HAS_HIBF)
     std::unique_ptr<seqan::hibf::hierarchical_interleaved_bloom_filter> hibf_;
 #endif
@@ -118,6 +122,7 @@ private:
     * @return None.
     */
     void build_ibf(std::vector<sequence_t> const & fragments);
+    void build_multi_ibf(std::vector<sequence_t> const & fragments);
 #if defined(LNCRNA_MERS_HAS_HIBF)
     /*
     * @fn build_hibf

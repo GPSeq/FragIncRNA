@@ -16,6 +16,7 @@ struct IBFConfig
 {
     std::size_t hash_functions{3};
     double fpr{0.01};
+    bool multi_indexing{false};
 };
 
 struct HIBFConfig

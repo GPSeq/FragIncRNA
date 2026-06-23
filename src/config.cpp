@@ -355,6 +355,8 @@ Config load_config_from_toml(std::filesystem::path const & config_path)
             cfg.ibf.hash_functions = parse_size_t(key, value);
         else if (key == "ibf.fpr")
             cfg.ibf.fpr = parse_double(key, value);
+        else if (key == "ibf.multi_indexing")
+            cfg.ibf.multi_indexing = parse_bool(key, value);
         else if (key == "hibf.hash_functions")
             cfg.hibf.hash_functions = parse_size_t(key, value);
         else if (key == "hibf.maximum_fpr")

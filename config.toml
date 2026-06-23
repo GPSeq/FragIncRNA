@@ -1,16 +1,16 @@
 [general]
 index_method = "ibf"
 
-ref_dir = "/mnt/d/primates_bmc/genomes/"
-query_file = "/mnt/d/primates_bmc/lncrna/gencode.v49.lncRNA_transcripts.fa"
+ref_dir = "test_data/genomes/"
+query_file = "test_data/query.fasta"
 
-output_dir = "/mnt/d/primates_bmc/kmers_results/20"
+output_dir = "test_data/results"
 output_file = "results.tsv"
 log_file = "ibf_run.log"
 
-fragment_size = 80000
-kmer_size = 20
-hit_threshold = 15
+fragment_size = 800
+kmer_size = 12
+hit_threshold = 1
 threads = 1
 
 store_fragments = false
@@ -21,6 +21,7 @@ single_results_writer = false
 [ibf]
 hash_functions = 3
 fpr = 0.01
+multi_indexing = true
 
 [hibf]
 hash_functions = 3
