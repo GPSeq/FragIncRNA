@@ -8,6 +8,9 @@ from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
@@ -29,6 +32,20 @@ STATUS_COLORS = {
 GENE_COLORS = {
     "HAR1A": "#2b8cbe",
     "ZNF667-AS1": "#756bb1",
+}
+SPECIES_ORDER = {
+    "human": 0,
+    "chimpanzee": 1,
+    "bonobo": 2,
+    "rhesus macaque": 3,
+    "other": 4,
+}
+SPECIES_LABELS = {
+    "human": "Human assemblies",
+    "chimpanzee": "Chimpanzee",
+    "bonobo": "Bonobo",
+    "rhesus macaque": "Rhesus macaque",
+    "other": "Other",
 }
 
 
@@ -62,6 +79,43 @@ def short_genome_name(name: str) -> str:
     return name.replace("human_lncRNA_vs_", "")
 
 
+def species_group(name: str) -> str:
+    text = short_genome_name(name).lower()
+
+    if any(token in text for token in ("hprc", "h9", "na19240")):
+        return "human"
+    if any(token in text for token in ("pantro", "ptr", "clint")):
+        return "chimpanzee"
+    if any(token in text for token in ("panpan", "ppa", "hudiblu")):
+        return "bonobo"
+    if any(token in text for token in ("mmul", "mmu8", "rhesus", "macaca")):
+        return "rhesus macaque"
+    return "other"
+
+
+def phylogenetic_sort_key(name: str) -> tuple[int, str]:
+    group = species_group(name)
+    return SPECIES_ORDER[group], short_genome_name(name).lower()
+
+
+def grouped_genome_columns(columns: list[str]) -> list[tuple[str, int, int]]:
+    groups = []
+    current_group = None
+    start = 0
+    for index, column in enumerate(columns):
+        group = species_group(column)
+        if current_group is None:
+            current_group = group
+            start = index
+        elif group != current_group:
+            groups.append((current_group, start, index - 1))
+            current_group = group
+            start = index
+    if current_group is not None:
+        groups.append((current_group, start, len(columns) - 1))
+    return groups
+
+
 def status_columns(df: pd.DataFrame) -> list[str]:
     required = {
         "transcript_id",
@@ -80,7 +134,7 @@ def status_columns(df: pd.DataFrame) -> list[str]:
     cols = list(df.columns[start:end])
     if not cols:
         raise SystemExit("No genome status columns found in alignment table.")
-    return cols
+    return sorted(cols, key=phylogenetic_sort_key)
 
 
 def load_alignment(path: Path) -> tuple[pd.DataFrame, list[str]]:
@@ -175,7 +229,7 @@ def plot_alignment_heatmap(
         ["#fff7bc", "#7fcdbb", "#2b8cbe"],
     )
     im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=0, vmax=1)
-    ax.set_title("Strict alignment support per genome assembly", pad=10)
+    ax.set_title("Strict alignment support per genome assembly", pad=54)
     ax.set_xticks(range(len(status_cols)))
     ax.set_xticklabels([short_genome_name(c) for c in status_cols], rotation=45, ha="right")
     ax.set_yticks(range(len(labels)))
@@ -183,6 +237,21 @@ def plot_alignment_heatmap(
     ax.tick_params(axis="both", length=0)
     ax.set_xlabel("Genome assembly")
     ax.set_ylabel("Gene")
+    for group, start, end in grouped_genome_columns(status_cols):
+        center = (start + end) / 2
+        ax.text(
+            center,
+            1.025,
+            SPECIES_LABELS[group],
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            fontweight="bold",
+            clip_on=False,
+        )
+        if start > 0:
+            ax.axvline(start - 0.5, color="#ffffff", linewidth=2.0)
     for i, row in enumerate(annotations):
         for j, text in enumerate(row):
             value = matrix[i, j]
@@ -369,11 +438,24 @@ def status_count_table(
 def plot_status_composition(ax: plt.Axes, status_counts: pd.DataFrame) -> None:
     zsub = status_counts[status_counts["gene_name"] == "ZNF667-AS1"]
     genomes = zsub["genome"].drop_duplicates().tolist()
-    y = np.arange(len(genomes))
-    left = np.zeros(len(genomes))
+    rows = []
+    current_group = None
+    for genome in genomes:
+        group = species_group(genome)
+        if group != current_group:
+            rows.append({"label": SPECIES_LABELS[group], "genome": None, "is_group": True})
+            current_group = group
+        rows.append({"label": f"  {genome}", "genome": genome, "is_group": False})
+
+    y = np.arange(len(rows))
+    left = np.zeros(len(rows))
     for status in STATUS_ORDER:
         values = []
-        for genome in genomes:
+        for row in rows:
+            genome = row["genome"]
+            if genome is None:
+                values.append(0)
+                continue
             value = zsub[
                 (zsub["genome"] == genome)
                 & (zsub["status"] == status)
@@ -393,9 +475,14 @@ def plot_status_composition(ax: plt.Axes, status_counts: pd.DataFrame) -> None:
     ax.set_title("ZNF667-AS1 alignment-status composition", pad=34)
     ax.set_xlabel("Transcript count")
     ax.set_yticks(y)
-    ax.set_yticklabels(genomes)
+    ax.set_yticklabels([row["label"] for row in rows])
+    for tick_label, row in zip(ax.get_yticklabels(), rows):
+        if row["is_group"]:
+            tick_label.set_fontweight("bold")
+        else:
+            tick_label.set_fontsize(9)
     ax.invert_yaxis()
-    ax.set_ylim(len(genomes) - 0.5, -1.35)
+    ax.set_ylim(len(rows) - 0.5, -1.35)
     ax.legend(
         frameon=False,
         fontsize=10,
@@ -449,7 +536,7 @@ def build_figure(
             "ps.fonttype": 42,
         }
     )
-    fig = plt.figure(figsize=(21, 18), constrained_layout=True)
+    fig = plt.figure(figsize=(21, 19.5), constrained_layout=True)
     gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.0], width_ratios=[1.05, 1.0])
     ax_a = fig.add_subplot(gs[0, 0])
     ax_b = fig.add_subplot(gs[0, 1])

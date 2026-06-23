@@ -1,4 +1,4 @@
-
+# python plots/src/plot_selected_lncRNA_gene_overlap.py   -i /mnt/d/primates_bmc/bam_comparison/qc/shared_lncRNA_transcripts/lncRNA_transcript_pass_counts.tsv     -o /mnt/d/primates_bmc/bam_comparison/qc/shared_lncRNA_transcripts/paper_plots/new
 import argparse
 import os
 from pathlib import Path
@@ -22,6 +22,22 @@ DEFAULT_INPUT = (
 GENE_ALIASES = {
     "MALAT": "MALAT1",
     "NEAT": "NEAT1",
+}
+
+SPECIES_ORDER = {
+    "human": 0,
+    "chimpanzee": 1,
+    "bonobo": 2,
+    "rhesus macaque": 3,
+    "other": 4,
+}
+
+SPECIES_LABELS = {
+    "human": "Human assemblies",
+    "chimpanzee": "Chimpanzee",
+    "bonobo": "Bonobo",
+    "rhesus macaque": "Rhesus macaque",
+    "other": "Other",
 }
 
 
@@ -65,6 +81,43 @@ def short_sample_name(name: str) -> str:
     return name.replace("human_lncRNA_vs_", "")
 
 
+def species_group(name: str) -> str:
+    text = short_sample_name(name).lower()
+
+    if any(token in text for token in ("hprc", "h9", "na19240")):
+        return "human"
+    if any(token in text for token in ("pantro", "ptr", "clint")):
+        return "chimpanzee"
+    if any(token in text for token in ("panpan", "ppa", "hudiblu")):
+        return "bonobo"
+    if any(token in text for token in ("mmul", "mmu8", "rhesus", "macaca")):
+        return "rhesus macaque"
+    return "other"
+
+
+def phylogenetic_sort_key(name: str) -> tuple[int, str]:
+    group = species_group(name)
+    return SPECIES_ORDER[group], short_sample_name(name).lower()
+
+
+def grouped_status_columns(columns: list[str]) -> list[tuple[str, int, int]]:
+    groups = []
+    current_group = None
+    start = 0
+    for index, column in enumerate(columns):
+        group = species_group(column)
+        if current_group is None:
+            current_group = group
+            start = index
+        elif group != current_group:
+            groups.append((current_group, start, index - 1))
+            current_group = group
+            start = index
+    if current_group is not None:
+        groups.append((current_group, start, len(columns) - 1))
+    return groups
+
+
 def status_columns(df: pd.DataFrame) -> list[str]:
     required = {
         "transcript_id",
@@ -80,7 +133,7 @@ def status_columns(df: pd.DataFrame) -> list[str]:
         raise SystemExit(f"Missing required column(s): {', '.join(missing)}")
     start = df.columns.get_loc("gene_name") + 1
     end = df.columns.get_loc("strict_pass_count")
-    return list(df.columns[start:end])
+    return sorted(df.columns[start:end], key=phylogenetic_sort_key)
 
 
 def canonical_gene_list(raw: str) -> list[str]:
@@ -165,12 +218,27 @@ def plot_count_heatmap(
 ) -> None:
     im = ax.imshow(data.to_numpy(), aspect="auto", cmap=cmap)
     annotate_heatmap(ax, data)
-    ax.set_title(title)
     ax.set_yticks(range(len(data.index)))
     ax.set_yticklabels(data.index)
     ax.set_xticks(range(len(data.columns)))
     ax.set_xticklabels([short_sample_name(c) for c in data.columns], rotation=60, ha="right")
+    for group, start, end in grouped_status_columns(list(data.columns)):
+        center = (start + end) / 2
+        ax.text(
+            center,
+            1.025,
+            SPECIES_LABELS[group],
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            fontweight="bold",
+            clip_on=False,
+        )
+        if start > 0:
+            ax.axvline(start - 0.5, color="#ffffff", linewidth=1.6)
     ax.tick_params(axis="both", length=0)
+    ax.set_title(title, pad=34)
     add_panel_label(ax, panel_label)
     return im
 
@@ -331,8 +399,8 @@ def main() -> None:
     strict_counts.to_csv(outdir / "selected_lncRNA_strict_counts_by_genome.tsv", sep="\t")
     basic_counts.to_csv(outdir / "selected_lncRNA_basic_counts_by_genome.tsv", sep="\t")
 
-    fig = plt.figure(figsize=(15, 10.8))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.25, 1.0], hspace=0.62, wspace=0.25)
+    fig = plt.figure(figsize=(15, 12.2))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.35, 1.0], hspace=0.72, wspace=0.25)
 
     ax_a = fig.add_subplot(gs[0, 0])
     im_a = plot_count_heatmap(

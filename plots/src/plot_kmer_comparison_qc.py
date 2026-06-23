@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-"""
-Example:
-  python plots/results/plot_kmer_comparison_qc.py \
-      --qc-dir ../kmers_comparison/qc \
-      --outdir ../kmers_comparison/qc/paper_plots
-"""
 
+# python plots/src/plot_kmer_comparison_qc.py --qc-dir ./kmer_results/ibf_new/qc --outdir ./kmer_results/ibf_new/qc/paper_plots
 from __future__ import annotations
 
 import argparse
@@ -15,6 +10,9 @@ from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 os.environ.setdefault("ARROW_USER_SIMD_LEVEL", "NONE")
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -29,6 +27,22 @@ RED = "#C44E52"
 INK = "#252525"
 GRAY = "#6F6F6F"
 LIGHT_GRID = "#E8E8E8"
+
+SPECIES_ORDER = {
+    "human": 0,
+    "chimpanzee": 1,
+    "bonobo": 2,
+    "rhesus macaque": 3,
+    "other": 4,
+}
+
+SPECIES_LABELS = {
+    "human": "Human assemblies",
+    "chimpanzee": "Chimpanzee",
+    "bonobo": "Bonobo",
+    "rhesus macaque": "Rhesus macaque",
+    "other": "Other",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -134,6 +148,44 @@ def count_statuses_by_genome(status_dir: Path) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["k_size", "genome"]).reset_index(drop=True)
 
 
+def species_group(name: str) -> str:
+    text = name.lower()
+
+    if any(token in text for token in ("hprc", "h9", "na19240")):
+        return "human"
+    if any(token in text for token in ("pantro", "ptr", "clint")):
+        return "chimpanzee"
+    if any(token in text for token in ("panpan", "ppa", "hudiblu")):
+        return "bonobo"
+    if any(token in text for token in ("mmul", "mmu8", "rhesus", "macaca")):
+        return "rhesus macaque"
+    return "other"
+
+
+def phylogenetic_sort_key(name: str) -> tuple[int, str]:
+    group = species_group(name)
+    return SPECIES_ORDER[group], short_genome_label(name).lower()
+
+
+def grouped_heatmap_rows(heat: pd.DataFrame) -> tuple[pd.DataFrame, list[tuple[int, str, bool]]]:
+    ordered_genomes = sorted(heat.index, key=phylogenetic_sort_key)
+    heat = heat.loc[ordered_genomes]
+
+    rows = []
+    labels = []
+    current_group = None
+    for genome in heat.index:
+        group = species_group(genome)
+        if group != current_group:
+            rows.append(pd.Series(np.nan, index=heat.columns, name=f"__group_{group}"))
+            labels.append((len(rows) - 1, SPECIES_LABELS[group], True))
+            current_group = group
+        rows.append(heat.loc[genome].rename(genome))
+        labels.append((len(rows) - 1, f"  {short_genome_label(genome)}", False))
+
+    return pd.DataFrame(rows, columns=heat.columns), labels
+
+
 def build_plot_summary(summary: pd.DataFrame, pass_counts: pd.DataFrame) -> pd.DataFrame:
     work = summary.copy()
     work["k_size"] = work["k_size"].astype(int)
@@ -216,7 +268,7 @@ def short_genome_label(name: str) -> str:
         "GCF_000258655.2_panpan1.1": "Bonobo panpan1.1",
         "GCF_002880755.1_Clint_PTRv2": "Chimp Clint",
         "GCF_003339765.1_Mmul_10": "Rhesus Mmul_10",
-        "GCF_013052645.1_Mhudiblu_PPA_v0": "Orangutan PPA",
+        "GCF_013052645.1_Mhudiblu_PPA_v0": "Bonobo Mhudiblu",
         "GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri": "Chimp mPanTro3",
         "GCF_029289425.2_NHGRI_mPanPan1-v2.0_pri": "Bonobo mPanPan1",
         "GCF_049350105.2_T2T-MMU8v2.0": "Rhesus T2T-MMU8",
@@ -311,19 +363,30 @@ def plot_status_heatmap(
     status_counts: pd.DataFrame,
 ) -> None:
     heat = status_counts.pivot(index="genome", columns="k_size", values="LOW_KMER")
-    heat = heat.sort_index()
-    labels = [short_genome_label(name) for name in heat.index]
+    heat, labels = grouped_heatmap_rows(heat)
     cmap = LinearSegmentedColormap.from_list("low_kmer", ["#F7FBFF", "#9ECAE1", BLUE])
+    cmap.set_bad("#FFFFFF")
+    values = heat.to_numpy(dtype=float)
+    vmax = max(3, np.nanmax(values))
 
-    image = ax.imshow(heat.to_numpy(), aspect="auto", cmap=cmap, vmin=0, vmax=max(3, heat.to_numpy().max()))
+    image = ax.imshow(values, aspect="auto", cmap=cmap, vmin=0, vmax=vmax)
     ax.set_xticks(np.arange(heat.shape[1]), labels=[str(k) for k in heat.columns])
-    ax.set_yticks(np.arange(heat.shape[0]), labels=labels)
+    ax.set_yticks([position for position, _label, _is_group in labels])
+    ax.set_yticklabels([label for _position, label, _is_group in labels])
     ax.set_xlabel("k-mer size")
     ax.set_title("LOW_KMER counts by genome")
     ax.tick_params(axis="y", length=0)
+    for tick_label, (_position, _label, is_group) in zip(ax.get_yticklabels(), labels):
+        if is_group:
+            tick_label.set_fontweight("bold")
+            tick_label.set_fontsize(8.2)
+        else:
+            tick_label.set_fontsize(7.4)
 
     for y in range(heat.shape[0]):
         for x in range(heat.shape[1]):
+            if pd.isna(heat.iat[y, x]):
+                continue
             value = int(heat.iat[y, x])
             if value > 0:
                 ax.text(x, y, str(value), ha="center", va="center", fontsize=7, color=INK)
@@ -404,12 +467,12 @@ def make_main_figure(
     outdir: Path,
     prefix: str,
 ) -> None:
-    fig = plt.figure(figsize=(14.5, 8.2))
+    fig = plt.figure(figsize=(14.5, 9.1))
     grid = fig.add_gridspec(
         2,
         2,
         width_ratios=[1.0, 1.15],
-        height_ratios=[1.0, 1.1],
+        height_ratios=[1.0, 1.25],
         wspace=0.62,
         hspace=0.38,
     )
@@ -466,9 +529,7 @@ def make_supplement_figures(
     fig.tight_layout()
     save_figure(fig, outdir / f"{prefix}_rare_outcomes_by_k")
 
-    fig, ax = plt.subplots(figsize=(8.5, 4.8))
-    heat = status_counts.pivot(index="genome", columns="k_size", values="LOW_KMER")
-    heat = heat.sort_index()
+    fig, ax = plt.subplots(figsize=(8.5, 5.6))
     plot_status_heatmap(ax, fig, status_counts)
     fig.tight_layout()
     save_figure(fig, outdir / f"{prefix}_low_kmer_heatmap")
