@@ -1,6 +1,7 @@
 #include "reference_index.hpp"
 
 #include "logger.hpp"
+#include "kmer_windows.hpp"
 
 #include <algorithm>
 #include <array>
@@ -71,20 +72,16 @@ std::vector<std::size_t> count_hits_with_flat_ibf(seqan3::interleaved_bloom_filt
                                                   auto const & seq,
                                                   std::size_t const kmer_size)
 {
-    std::vector<std::size_t> counts;
-
-    if (seq.size() < kmer_size)
-        return counts;
-
-    counts.reserve(seq.size() - kmer_size + 1);
-
+    if (seq.size() < kmer_size) return {};
+    std::vector<std::size_t> counts(seq.size() - kmer_size + 1, 0);
     auto agent = ibf.membership_agent();
-    auto hash_view = seq | seqan3::views::kmer_hash(seqan3::ungapped{static_cast<uint8_t>(kmer_size)});
-
-    for (auto const hash : hash_view)
+    fraglncrna::RollingDnaWindow maker{kmer_size};
+    for (std::size_t pos = 0; pos < seq.size(); ++pos)
     {
-        auto const & matches = agent.bulk_contains(hash);
-        counts.push_back(std::ranges::count(matches, 1));
+        auto window = maker.push(seqan3::to_char(seq[pos]));
+        if (!window || !window->valid) continue;
+        auto const & matches = agent.bulk_contains(window->canonical());
+        counts[pos + 1 - kmer_size] = std::ranges::count(matches, 1);
     }
 
     return counts;
@@ -383,7 +380,6 @@ void ReferenceIndex<sequence_t>::build_multi_ibf(std::vector<sequence_t> const &
         throw std::runtime_error{
             "kmer_size must be > 0 and <= maximum fragment length for reference '" + ref_name_ + "'."};
 
-    auto hash_view = seqan3::views::kmer_hash(seqan3::ungapped{static_cast<uint8_t>(cfg_.kmer_size)});
     ibfs_.reserve(fragments.size());
 
     std::size_t total_bins = 0;
@@ -407,8 +403,10 @@ void ReferenceIndex<sequence_t>::build_multi_ibf(std::vector<sequence_t> const &
         std::size_t bin_idx = 0;
         for (auto const & bin : bins)
         {
-            for (auto const hash : bin | hash_view)
-                ibf->emplace(static_cast<uint64_t>(hash), bin_index{bin_idx});
+            fraglncrna::RollingDnaWindow maker{cfg_.kmer_size};
+            for (auto const base : bin)
+                if (auto window = maker.push(seqan3::to_char(base)); window && window->valid)
+                    ibf->emplace(window->canonical(), bin_index{bin_idx});
             ++bin_idx;
         }
 
@@ -457,13 +455,13 @@ void ReferenceIndex<sequence_t>::build_ibf(std::vector<sequence_t> const & fragm
         hash_function_count{cfg_.ibf.hash_functions}
     );
 
-    auto hash_view = seqan3::views::kmer_hash(seqan3::ungapped{static_cast<uint8_t>(cfg_.kmer_size)});
-
     std::size_t bin_idx = 0;
     for (auto const & fragment : fragments)
     {
-        for (auto const hash : fragment | hash_view)
-            ibf_->emplace(static_cast<uint64_t>(hash), bin_index{bin_idx});
+        fraglncrna::RollingDnaWindow maker{cfg_.kmer_size};
+        for (auto const base : fragment)
+            if (auto window = maker.push(seqan3::to_char(base)); window && window->valid)
+                ibf_->emplace(window->canonical(), bin_index{bin_idx});
         ++bin_idx;
     }
 

@@ -72,6 +72,13 @@ add_executable(lncrna_mers
     src/main.cpp
 )
 
+find_package(ZLIB REQUIRED)
+add_executable(lncrna_mers_v2 src/kmer_v2.cpp)
+target_link_libraries(lncrna_mers_v2 PRIVATE seqan3::seqan3 ZLIB::ZLIB)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(lncrna_mers_v2 PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 target_link_libraries(lncrna_mers
     PRIVATE
         lncrna_mers_lib
@@ -89,6 +96,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 if (BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_executable(lncrna_mers_tests
         tests/unit/test_main.cpp
     )
@@ -99,4 +107,27 @@ if (BUILD_TESTING)
     )
 
     add_test(NAME lncrna_mers_tests COMMAND lncrna_mers_tests)
+    add_test(NAME kmer_v2_integration
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_kmer_v2.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
+    add_test(NAME kmer_v2_toml
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_kmer_v2_toml.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
+    add_test(NAME legacy_score_regression
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_legacy_score.py
+                     $<TARGET_FILE:lncrna_mers>)
+    add_test(NAME fasta_sampling
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_sample_fasta.py
+                     ${CMAKE_SOURCE_DIR}/scripts/sample_fasta.py)
+    add_test(NAME threshold_fitting
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_fit_kmer_thresholds.py)
+    add_test(NAME multi_reference_merge
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_merge_kmer_v2.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
+    add_test(NAME kmer_v2_provenance_loci
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_kmer_v2_provenance_loci.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
+    add_test(NAME shared_legacy_windows
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_shared_legacy_windows.py
+                     $<TARGET_FILE:lncrna_mers> $<TARGET_FILE:negative_set>)
 endif()
