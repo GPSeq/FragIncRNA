@@ -152,6 +152,9 @@ if (BUILD_TESTING)
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_production_runner.py)
     add_test(NAME command_resource_measurement
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_measure_command.py)
+    add_test(NAME output_documentation_contract
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_output_documentation.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
     add_test(NAME kmer_v2_provenance_loci
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_kmer_v2_provenance_loci.py
                      $<TARGET_FILE:lncrna_mers_v2>)
