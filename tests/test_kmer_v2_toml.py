@@ -19,7 +19,8 @@ EXAMPLE = ROOT / "configs" / "example.toml"
 example_text = EXAMPLE.read_text()
 assert '[v2]' in example_text and 'mode = "exact"' in example_text
 source = (ROOT / "src" / "kmer_v2.cpp").read_text()
-cli_keys = set(re.findall(r'(?:if|else if) \(key == "--([^"]+)"\)', source)) - {"help", "config"}
+cli_keys = {key for key in re.findall(r'(?:if|else if) \(key == "--([^"]+)"\)', source)
+            if key not in {"help", "config"} and not key.startswith("no-")}
 documented_keys = set(re.findall(r"^\s*#?\s*([a-z][a-z0-9_]*)\s*=", example_text, re.M))
 assert {key.replace("-", "_") for key in cli_keys} <= documented_keys
 
@@ -88,6 +89,32 @@ with tempfile.TemporaryDirectory(prefix="fraglncrna-v2-toml-") as directory:
     assert calibrated["configured_per_bin_fpr"] < 0.01
     assert bins.exists()
 
+    per_bin_config = tmp / "per_bin.toml"
+    per_bin_config.write_text(
+        f'[v2]\nreference = "{FIXTURE / "reference.fa"}"\n'
+        f'queries = "{FIXTURE / "queries.fa"}"\noutput = "{tmp / "per_bin_config.tsv"}"\n'
+        'k = 4\nfragment_size = 4\nmode = "validate"\n'
+        'fdr_control_per_bin = true\nper_bin_exact_verify = true\n'
+        'per_bin_min_hits = 1\nper_bin_min_fraction = 0.25\n')
+    run("--config", per_bin_config)
+    per_bin_cli = tmp / "per_bin_cli.tsv"
+    run("--reference", FIXTURE / "reference.fa", "--queries", FIXTURE / "queries.fa",
+        "--output", per_bin_cli, "--k", "4", "--fragment-size", "4", "--mode", "validate",
+        "--fdr-control-per-bin", "--per-bin-min-hits", "1", "--per-bin-min-fraction", "0.25")
+    assert (tmp / "per_bin_config.tsv.per_bin.tsv").read_bytes() == pathlib.Path(
+        str(per_bin_cli) + ".per_bin.tsv").read_bytes()
+    assert (tmp / "per_bin_config.tsv.per_bin.tsv.candidates.tsv").read_bytes() == pathlib.Path(
+        str(per_bin_cli) + ".per_bin.tsv.candidates.tsv").read_bytes()
+    disabled = tmp / "per_bin_disabled.tsv"
+    run("--config", per_bin_config, "--no-fdr-control-per-bin", "--output", disabled)
+    assert not pathlib.Path(str(disabled) + ".per_bin.tsv").exists()
+    false_config = tmp / "per_bin_false.toml"
+    false_config.write_text(per_bin_config.read_text().replace("fdr_control_per_bin = true",
+                                                          "fdr_control_per_bin = false"))
+    enabled = tmp / "per_bin_enabled.tsv"
+    run("--config", false_config, "--fdr-control-per-bin", "--output", enabled)
+    assert pathlib.Path(str(enabled) + ".per_bin.tsv").exists()
+
     for bad, expected in (
         ('[v2]\nunknown = 1\n', "Unknown v2 TOML key"),
         ('[v2]\nk = 4\nk = 5\n', "Duplicate TOML key"),
@@ -95,6 +122,8 @@ with tempfile.TemporaryDirectory(prefix="fraglncrna-v2-toml-") as directory:
         ('[v2]\nk = "4"\n', "requires a nonnegative number"),
         ('[v2]\nk = 1__000\n', "Invalid TOML number"),
         ('[v2]\nmode = "ex"act"\n', "Unescaped quote"),
+        ('[v2]\nfdr_control_per_bin = "true"\n', "requires true or false"),
+        ('[v2]\nfdr_control_per_bin = 1\n', "requires true or false"),
         ('[general]\nreference = "x"\n', "Expected one [v2]"),
     ):
         broken = tmp / "broken.toml"

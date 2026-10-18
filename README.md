@@ -18,6 +18,24 @@ The CLI example writes `/tmp/fraglncrna-v2.tsv` and its metrics JSON. The fully 
 
 For the first real-data check, use the [measured 5,000-transcript runbook](docs/KMER_REAL_DATA_FIRST_RUN.md). `scripts/sample_fasta.py` makes a seeded subset and writes its own time and peak-memory JSON.
 
+### Optional per-bin coherence screen
+
+`--fdr-control-per-bin` adds candidate fragment scores and exact candidate-region
+verification without changing the existing main TSV columns. The requested
+flag name does **not** imply statistical FDR control: it measures how many
+original query windows hit each IBF bin, groups nearby candidate bins, and
+checks selected regions against the original reference. The paired per-query
+table defaults to `<output>.per_bin.tsv`; candidate regions go to
+`<output>.per_bin.tsv.candidates.tsv`. Use `--per-bin-min-hits`,
+`--per-bin-min-fraction`, `--per-bin-top-k`, and
+`--per-bin-max-locus-gap` to set the heuristic screen. The same Boolean and
+numeric options are available in `[v2]` TOML; see
+[the complete example](configs/example.toml) and [method definition](docs/PER_BIN_IBF_METHOD.md).
+For an unverified historical-index diagnostic, add `--mode ibf
+--no-per-bin-exact-verify`; the separate candidate status must not be read as
+global recovery. The [comparison report](docs/PER_BIN_IBF_BENCHMARK.md) records
+measured chr1 outcomes and resource costs.
+
 ## Requirements
 
 - CMake 3.20+

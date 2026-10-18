@@ -113,6 +113,9 @@ if (BUILD_TESTING)
     add_test(NAME kmer_v2_toml
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_kmer_v2_toml.py
                      $<TARGET_FILE:lncrna_mers_v2>)
+    add_test(NAME per_bin_ibf
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_per_bin_ibf.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
     add_test(NAME legacy_score_regression
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_legacy_score.py
                      $<TARGET_FILE:lncrna_mers>)

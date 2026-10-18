@@ -36,11 +36,28 @@ fragments = "/tmp/fraglncrna-v2-fragments.tsv"  # "" disables this report
 # set genome_fpr explicitly to change that whole-reference target. Keep this
 # line commented in exact mode, which has no IBF. A loaded index must match
 # the effective per-bin FPR and all other recorded compatibility metadata.
-hash_functions = 3
+hash_functions = 3              # SeqAn flat IBF permits 1..5
 fpr = 0.01
 # genome_fpr = 0.01             # IBF modes only; 0 < value <= 0.5
 save_index = ""                  # path.ibf to build/save, or "" to disable
 load_index = ""                  # path.ibf to load, mutually exclusive above
+
+# Optional per-bin coherence screening. This requested flag name is historical:
+# it does not guarantee statistical false discovery rate control. The score is
+# H_b / valid query windows for each original genomic bin. Candidate bins need
+# at least both min_hits and min_fraction; defaults are heuristic, not trained.
+# Exact verification scans original reference bases and is enabled by default.
+# Set mode = "ibf" and per_bin_exact_verify = false for unverified diagnostics;
+# in that setting the historical high-FPR index can be reused with fpr = 0.01.
+# With mode = "validate", a matching saved high- or low-FPR index can be reused.
+fdr_control_per_bin = false
+per_bin_min_hits = 2
+per_bin_min_fraction = 0.05
+per_bin_top_k = 64            # cap candidate bins after deterministic ranking
+per_bin_max_locus_gap = 50000 # cluster selected bins on the same contig
+per_bin_exact_verify = true
+per_bin_output = ""          # default: <output>.per_bin.tsv when enabled;
+                             # also writes <per_bin_output>.candidates.tsv
 
 # Query classification thresholds. A threshold_table overrides both numeric
 # values and requires a distinct evaluation_control_set label. The table must

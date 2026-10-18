@@ -50,14 +50,17 @@ struct Options
     fs::path reference_repeat_bed, query_repeat_bed, repeat_classes, reference_hit_classes, exon_blocks;
     fs::path loci_output, expected_loci_bed, expected_loci_output;
     fs::path save_index, load_index;
-    fs::path threshold_table;
+    fs::path threshold_table, per_bin_output;
     std::size_t k = 15, fragment_size = 8000, hash_functions = 3, batch_windows = 100000;
     std::size_t local_window = 0, max_position_rows = 1000000, max_calibration_pairs = 10000000;
     std::size_t max_ibf_bin_pairs = 10000000;
     std::size_t max_repeat_intervals = 5000000, max_exon_blocks = 1000000, max_query_bases = 50000000;
     std::size_t locus_gap = 8000, max_locus_span = 1000000, max_locus_rows = 100000, max_expected_loci = 1000000;
+    std::size_t per_bin_min_hits = 2, per_bin_top_k = 64, per_bin_max_locus_gap = 50000;
     bool local_window_given = false, genome_fpr_given = false;
+    bool fdr_control_per_bin = false, per_bin_exact_verify = true;
     double fpr = 0.01, basic = 0.75, strict = 0.85;
+    double per_bin_min_fraction = 0.05;
     double genome_fpr = 0.01, requested_per_bin_fpr = 0.01;
     std::string strand = "canonical", ambiguity = "skip", repeat = "include", mode = "validate";
     std::string mask_target = "both";
@@ -254,12 +257,14 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
                key == "max_calibration_pairs" || key == "max_ibf_bin_pairs" ||
                key == "max_repeat_intervals" || key == "max_exon_blocks" ||
                key == "max_query_bases" || key == "locus_gap" || key == "max_locus_span" ||
-               key == "max_locus_rows" || key == "max_expected_loci";
+               key == "max_locus_rows" || key == "max_expected_loci" ||
+               key == "per_bin_min_hits" || key == "per_bin_top_k" ||
+               key == "per_bin_max_locus_gap";
     };
     auto is_real = [](std::string const & key)
     {
         return key == "fpr" || key == "genome_fpr" || key == "basic_threshold" ||
-               key == "strict_threshold";
+               key == "strict_threshold" || key == "per_bin_min_fraction";
     };
     auto is_string = [](std::string const & key)
     {
@@ -271,7 +276,11 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
                key == "expected_loci_output" || key == "save_index" || key == "load_index" ||
                key == "mask_target" || key == "threshold_table" ||
                key == "evaluation_control_set" || key == "strand" || key == "ambiguity" ||
-               key == "repeat" || key == "mode";
+               key == "repeat" || key == "mode" || key == "per_bin_output";
+    };
+    auto is_boolean = [](std::string const & key)
+    {
+        return key == "fdr_control_per_bin" || key == "per_bin_exact_verify";
     };
     while (std::getline(input, raw))
     {
@@ -297,8 +306,16 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
         std::string value = trim_config(std::string_view{line}.substr(equal + 1));
         if (!seen.insert(key).second)
             throw std::runtime_error("Duplicate TOML key '" + key + "'");
-        if (!is_string(key) && !is_integer(key) && !is_real(key))
+        if (!is_string(key) && !is_integer(key) && !is_real(key) && !is_boolean(key))
             throw std::runtime_error("Unknown v2 TOML key '" + key + "'");
+        if (is_boolean(key))
+        {
+            if (value != "true" && value != "false")
+                throw std::runtime_error("TOML key '" + key + "' requires true or false");
+            std::replace(key.begin(), key.end(), '_', '-');
+            args.push_back(value == "true" ? "--" + key : "--no-" + key);
+            continue;
+        }
         if (is_string(key)) value = parse_config_string(key, value);
         else
         {
@@ -343,6 +360,14 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
 Options parse_options(int argc, char ** argv)
 {
     Options o;
+    auto parse_size = [](std::string const & value, std::string const & key)
+    {
+        if (value.empty() || value.front() == '-') throw std::runtime_error("Invalid value for " + key);
+        std::size_t consumed = 0;
+        auto number = std::stoull(value, &consumed);
+        if (consumed != value.size()) throw std::runtime_error("Invalid value for " + key);
+        return static_cast<std::size_t>(number);
+    };
     std::vector<std::string> args{argv[0]};
     for (int i = 1; i < argc; ++i)
     {
@@ -393,10 +418,19 @@ Options parse_options(int argc, char ** argv)
                          "[--local-window BASES] [--positions OUT.tsv[.gz]] [--max-position-rows 1000000] "
                          "[--calibration-bins OUT.tsv] [--max-calibration-pairs 10000000] "
                          "[--max-ibf-bin-pairs 10000000] "
+                         "[--fdr-control-per-bin | --no-fdr-control-per-bin] "
+                         "[--per-bin-min-hits 2] [--per-bin-min-fraction 0.05] "
+                         "[--per-bin-top-k 64] [--per-bin-max-locus-gap 50000] "
+                         "[--per-bin-exact-verify | --no-per-bin-exact-verify] "
+                         "[--per-bin-output OUT.tsv] "
                          "[--save-index INDEX.ibf | --load-index INDEX.ibf] "
                          "[--metrics OUT.json]\n";
             std::exit(0);
         }
+        if (key == "--fdr-control-per-bin") { o.fdr_control_per_bin = true; continue; }
+        if (key == "--no-fdr-control-per-bin") { o.fdr_control_per_bin = false; continue; }
+        if (key == "--per-bin-exact-verify") { o.per_bin_exact_verify = true; continue; }
+        if (key == "--no-per-bin-exact-verify") { o.per_bin_exact_verify = false; continue; }
         if (i + 1 >= args.size()) throw std::runtime_error("Missing value for " + key);
         std::string value = args[++i];
         if (key == "--reference") o.reference = value;
@@ -419,6 +453,7 @@ Options parse_options(int argc, char ** argv)
         else if (key == "--mask-target") o.mask_target = value;
         else if (key == "--threshold-table") o.threshold_table = value;
         else if (key == "--evaluation-control-set") o.evaluation_control_set = value;
+        else if (key == "--per-bin-output") o.per_bin_output = value;
         else if (key == "--k") o.k = std::stoull(value);
         else if (key == "--fragment-size") o.fragment_size = std::stoull(value);
         else if (key == "--hash-functions") o.hash_functions = std::stoull(value);
@@ -434,10 +469,14 @@ Options parse_options(int argc, char ** argv)
         else if (key == "--max-locus-span") o.max_locus_span = std::stoull(value);
         else if (key == "--max-locus-rows") o.max_locus_rows = std::stoull(value);
         else if (key == "--max-expected-loci") o.max_expected_loci = std::stoull(value);
+        else if (key == "--per-bin-min-hits") o.per_bin_min_hits = parse_size(value, key);
+        else if (key == "--per-bin-top-k") o.per_bin_top_k = parse_size(value, key);
+        else if (key == "--per-bin-max-locus-gap") o.per_bin_max_locus_gap = parse_size(value, key);
         else if (key == "--fpr") o.fpr = std::stod(value);
         else if (key == "--genome-fpr") { o.genome_fpr = std::stod(value); o.genome_fpr_given = true; }
         else if (key == "--basic-threshold") o.basic = std::stod(value);
         else if (key == "--strict-threshold") o.strict = std::stod(value);
+        else if (key == "--per-bin-min-fraction") o.per_bin_min_fraction = std::stod(value);
         else if (key == "--strand") o.strand = value;
         else if (key == "--ambiguity") o.ambiguity = value;
         else if (key == "--repeat") o.repeat = value;
@@ -447,13 +486,15 @@ Options parse_options(int argc, char ** argv)
     if (o.reference.empty() || o.queries.empty() || o.output.empty())
         throw std::runtime_error("--reference, --queries, and --output are required");
     if (o.k < 1 || o.k > 32 || o.fragment_size < o.k || o.hash_functions < 1 ||
-        o.hash_functions > 32 || o.batch_windows < 1 || o.max_position_rows < 1 ||
+        o.hash_functions > 5 || o.batch_windows < 1 || o.max_position_rows < 1 ||
         o.max_calibration_pairs < 1 || o.max_ibf_bin_pairs < 1 ||
         o.max_repeat_intervals < 1 || o.max_exon_blocks < 1 || o.max_query_bases < o.k ||
         o.max_locus_span < o.k || o.max_locus_rows < 1 || o.max_expected_loci < 1 ||
+        o.per_bin_min_hits < 1 || o.per_bin_top_k < 1 || o.per_bin_top_k > 1024 ||
+        !(0 <= o.per_bin_min_fraction && o.per_bin_min_fraction <= 1) ||
         !(o.fpr > 0 && o.fpr <= 0.5) || !(o.genome_fpr > 0 && o.genome_fpr <= 0.5) ||
         !(0 <= o.basic && o.basic <= o.strict && o.strict <= 1))
-        throw std::runtime_error("Invalid numeric option (k 1..32, fragment >= k, FPR (0,0.5], thresholds 0..1)");
+        throw std::runtime_error("Invalid numeric option (k 1..32, hash functions 1..5, fragment >= k, FPR (0,0.5], fractions 0..1)");
     if (o.strand != "canonical" && o.strand != "forward" && o.strand != "both")
         throw std::runtime_error("Invalid --strand");
     if (o.ambiguity != "skip" && o.ambiguity != "error") throw std::runtime_error("Invalid --ambiguity");
@@ -484,6 +525,12 @@ Options parse_options(int argc, char ** argv)
         throw std::runtime_error("Choose --save-index or --load-index, not both");
     if (o.mode == "exact" && (!o.save_index.empty() || !o.load_index.empty()))
         throw std::runtime_error("Index serialization requires an IBF mode");
+    if (o.fdr_control_per_bin && o.mode == "exact")
+        throw std::runtime_error("--fdr-control-per-bin requires an IBF mode");
+    if (o.fdr_control_per_bin && o.mode == "ibf" && o.per_bin_exact_verify)
+        throw std::runtime_error("--mode ibf with --fdr-control-per-bin requires --no-per-bin-exact-verify; use --mode validate for verified candidates");
+    if (!o.fdr_control_per_bin && !o.per_bin_output.empty())
+        throw std::runtime_error("--per-bin-output requires --fdr-control-per-bin");
     if (o.local_window_given && o.local_window < o.k)
         throw std::runtime_error("--local-window must be at least k");
     if (o.evaluation_control_set.find_first_of("\t\r\n") != std::string::npos)
@@ -495,6 +542,8 @@ Options parse_options(int argc, char ** argv)
     if (o.repeat == "annotate" && o.repeat_classes.empty()) o.repeat_classes = o.output.string() + ".repeat_classes.tsv";
     if (!o.expected_loci_bed.empty() && o.expected_loci_output.empty())
         o.expected_loci_output = o.output.string() + ".expected_loci.tsv";
+    if (o.fdr_control_per_bin && o.per_bin_output.empty())
+        o.per_bin_output = o.output.string() + ".per_bin.tsv";
     std::vector<fs::path> inputs{o.reference, o.queries}, outputs{o.output, o.metrics};
     if (!o.config_path.empty()) inputs.push_back(o.config_path);
     for (auto const & input : {o.reference_repeat_bed, o.query_repeat_bed, o.exon_blocks, o.expected_loci_bed,
@@ -503,8 +552,9 @@ Options parse_options(int argc, char ** argv)
         if (!input.empty()) inputs.push_back(input);
     for (auto const & output : {o.positions, o.calibration_bins, o.fragments, o.repeat_classes,
                                o.reference_hit_classes, o.loci_output,
-                               o.expected_loci_output, o.save_index})
+                               o.expected_loci_output, o.save_index, o.per_bin_output})
         if (!output.empty()) outputs.push_back(output);
+    if (!o.per_bin_output.empty()) outputs.push_back(o.per_bin_output.string() + ".candidates.tsv");
     if (!o.save_index.empty()) outputs.push_back(o.save_index.string() + ".metadata.json");
     auto same_path = [](fs::path const & a, fs::path const & b)
     {
@@ -1177,6 +1227,16 @@ void write_index_metadata_json(fs::path const & index_path, IndexMetadata const 
     if (!out) throw std::runtime_error("Failed writing index metadata");
 }
 
+struct PerBinCandidate
+{
+    std::size_t bin = 0, contig = 0, start = 0, end = 0, hits = 0;
+};
+
+struct PerBinRegion
+{
+    std::size_t contig = 0, start = 0, end = 0, bins = 0, max_hits = 0, sum_hits = 0;
+};
+
 struct Query
 {
     std::string id;
@@ -1185,6 +1245,10 @@ struct Query
     std::vector<Window> windows;
     std::vector<std::size_t> bin_hits;
     std::vector<std::vector<std::size_t>> positive_bins;
+    std::unordered_map<std::size_t, std::size_t> per_bin_counts;
+    std::vector<PerBinCandidate> per_bin_candidates;
+    std::vector<PerBinRegion> per_bin_regions;
+    std::size_t max_bin_hits = 0, candidate_bins_before_top_k = 0;
 };
 
 struct Hit
@@ -1199,6 +1263,8 @@ struct ExactResult
     std::unordered_set<uint64_t> found;
     std::vector<std::vector<Hit>> hits;
     std::unordered_map<uint64_t, std::vector<std::size_t>> exact_bins;
+    std::vector<std::vector<std::size_t>> per_bin_region_exact_windows;
+    std::vector<std::size_t> per_bin_candidate_union_windows;
 };
 
 class PositionWriter
@@ -1300,20 +1366,82 @@ Query make_query(std::string id, std::size_t index, std::string const & sequence
         if (w->base_valid) ++q.base_valid_windows;
         if (w->base_valid && w->repeat) ++q.repeat_windows;
         if (w->valid) ++q.valid_windows;
-        if (o.mode == "calibrate")
+        if (o.mode == "calibrate" || o.fdr_control_per_bin)
         {
-            q.positive_bins.push_back(w->valid && agent ? positive_bins(*agent, *w, o)
-                                                         : std::vector<std::size_t>{});
-            q.bin_hits.push_back(q.positive_bins.back().size());
+            auto hits = w->valid && agent ? positive_bins(*agent, *w, o)
+                                          : std::vector<std::size_t>{};
+            q.bin_hits.push_back(hits.size());
             if (q.bin_hits.back() > o.max_ibf_bin_pairs - q.positive_bin_pairs)
                 throw std::runtime_error("IBF-positive bin pairs exceed --max-ibf-bin-pairs for one query; "
                                          "reduce --batch-windows or raise the explicit cap");
             q.positive_bin_pairs += q.bin_hits.back();
+            if (o.fdr_control_per_bin)
+                for (std::size_t bin : hits) ++q.per_bin_counts[bin];
+            if (o.mode == "calibrate") q.positive_bins.push_back(std::move(hits));
         }
         else q.bin_hits.push_back(w->valid && agent ? count_bins(*agent, *w, o) : 0);
         q.windows.push_back(*w);
     }
     return q;
+}
+
+void prepare_per_bin_query(Query & q, Options const & o, ReferenceInfo const & info)
+{
+    if (!o.fdr_control_per_bin) return;
+    for (auto const & [bin, hits] : q.per_bin_counts)
+    {
+        q.max_bin_hits = std::max(q.max_bin_hits, hits);
+        if (hits < o.per_bin_min_hits ||
+            static_cast<double>(hits) < o.per_bin_min_fraction * q.valid_windows) continue;
+        std::size_t contig = static_cast<std::size_t>(
+            std::upper_bound(info.bin_offsets.begin(), info.bin_offsets.end(), bin) - info.bin_offsets.begin() - 1);
+        std::size_t start = (bin - info.bin_offsets[contig]) * o.fragment_size;
+        q.per_bin_candidates.push_back({bin, contig, start,
+                                        std::min(start + o.fragment_size, info.lengths[contig]), hits});
+    }
+    decltype(q.per_bin_counts){}.swap(q.per_bin_counts);
+    std::sort(q.per_bin_candidates.begin(), q.per_bin_candidates.end(),
+        [](auto const & a, auto const & b)
+        {
+            if (a.hits != b.hits) return a.hits > b.hits;
+            return std::tie(a.contig, a.start, a.bin) < std::tie(b.contig, b.start, b.bin);
+        });
+    q.candidate_bins_before_top_k = q.per_bin_candidates.size();
+    if (q.per_bin_candidates.size() > o.per_bin_top_k) q.per_bin_candidates.resize(o.per_bin_top_k);
+    q.per_bin_candidates.shrink_to_fit();
+    auto ordered = q.per_bin_candidates;
+    std::sort(ordered.begin(), ordered.end(), [](auto const & a, auto const & b)
+    { return std::tie(a.contig, a.start, a.bin) < std::tie(b.contig, b.start, b.bin); });
+    for (auto const & candidate : ordered)
+    {
+        bool connected = false;
+        if (!q.per_bin_regions.empty())
+        {
+            auto const & previous = q.per_bin_regions.back();
+            connected = candidate.contig == previous.contig &&
+                        (candidate.start <= previous.end ||
+                         candidate.start - previous.end <= o.per_bin_max_locus_gap) &&
+                        candidate.end - previous.start <= o.max_locus_span;
+        }
+        if (!connected)
+            q.per_bin_regions.push_back({candidate.contig, candidate.start, candidate.end, 1,
+                                         candidate.hits, candidate.hits});
+        else
+        {
+            auto & region = q.per_bin_regions.back();
+            region.end = std::max(region.end, candidate.end);
+            ++region.bins;
+            region.max_hits = std::max(region.max_hits, candidate.hits);
+            region.sum_hits += candidate.hits;
+        }
+    }
+    std::sort(q.per_bin_regions.begin(), q.per_bin_regions.end(),
+        [](auto const & a, auto const & b)
+        {
+            if (a.max_hits != b.max_hits) return a.max_hits > b.max_hits;
+            if (a.sum_hits != b.sum_hits) return a.sum_hits > b.sum_hits;
+            return std::tie(a.contig, a.start, a.end) < std::tie(b.contig, b.start, b.end);
+        });
 }
 
 ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed const & reference_bed,
@@ -1323,9 +1451,29 @@ ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed
     bool collect_hits = o.local_window || !o.positions.empty() || !o.reference_hit_classes.empty() ||
                         !o.exon_blocks.empty() ||
                         !o.loci_output.empty() || !o.expected_loci_bed.empty();
+    bool verify_regions = o.fdr_control_per_bin && o.per_bin_exact_verify;
     std::unordered_map<uint64_t, std::vector<std::pair<std::size_t, std::size_t>>> owners;
     ExactResult result;
     if (collect_hits) result.hits.resize(batch.size());
+    std::vector<std::vector<std::vector<uint64_t>>> region_masks;
+    if (verify_regions)
+    {
+        constexpr std::size_t max_mask_words = (256ULL * 1024 * 1024) / sizeof(uint64_t);
+        std::size_t mask_words = 0;
+        for (auto const & query : batch)
+        {
+            std::size_t words_per_region = (query.windows.size() + 63) / 64;
+            if (words_per_region && query.per_bin_regions.size() >
+                                    (max_mask_words - mask_words) / words_per_region)
+                throw std::runtime_error("Per-bin exact region masks exceed 256 MiB per batch; "
+                                         "reduce --batch-windows or --per-bin-top-k");
+            mask_words += words_per_region * query.per_bin_regions.size();
+        }
+        region_masks.resize(batch.size());
+        for (std::size_t qi = 0; qi < batch.size(); ++qi)
+            for (std::size_t ignored = 0; ignored < batch[qi].per_bin_regions.size(); ++ignored)
+                region_masks[qi].emplace_back((batch[qi].windows.size() + 63) / 64, 0);
+    }
     for (std::size_t qi = 0; qi < batch.size(); ++qi)
         for (std::size_t wi = 0; wi < batch[qi].windows.size(); ++wi)
         {
@@ -1334,7 +1482,7 @@ ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed
             {
                 sought.insert(w.forward);
                 if (o.strand != "forward") sought.insert(w.reverse);
-                if (collect_hits)
+                if (collect_hits || verify_regions)
                 {
                     owners[w.forward].emplace_back(qi, wi);
                     if (o.strand != "forward" && w.reverse != w.forward)
@@ -1342,7 +1490,15 @@ ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed
                 }
             }
         }
-    if (sought.empty()) return result;
+    if (sought.empty())
+    {
+        if (verify_regions)
+        {
+            result.per_bin_region_exact_windows.resize(batch.size());
+            result.per_bin_candidate_union_windows.resize(batch.size());
+        }
+        return result;
+    }
     WindowMaker maker{o, o.repeat == "exclude" && o.mask_target != "query"};
     BedCursor bed{reference_bed};
     std::size_t contig = 0, hit_rows = 0, calibration_pairs = 0;
@@ -1365,11 +1521,20 @@ ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed
                                                  "reduce --batch-windows or raise the explicit cap");
                 }
             }
-            if (!collect_hits) return;
+            if (!collect_hits && !verify_regions) return;
             auto it = owners.find(w->forward);
             if (it == owners.end()) return;
             for (auto const & [qi, wi] : it->second)
             {
+                if (verify_regions)
+                    for (std::size_t ri = 0; ri < batch[qi].per_bin_regions.size(); ++ri)
+                    {
+                        auto const & region = batch[qi].per_bin_regions[ri];
+                        std::size_t start = pos + 1 - o.k;
+                        if (region.contig == contig - 1 && start >= region.start && start < region.end)
+                            region_masks[qi][ri][wi / 64] |= uint64_t{1} << (wi % 64);
+                    }
+                if (!collect_hits) continue;
                 auto const & query_window = batch[qi].windows[wi];
                 char strand = query_window.forward == query_window.reverse ? '.' :
                               query_window.forward == w->forward ? '+' : '-';
@@ -1379,6 +1544,27 @@ ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed
                                              "reduce --batch-windows or raise the explicit cap");
             }
         });
+    if (verify_regions)
+    {
+        result.per_bin_region_exact_windows.resize(batch.size());
+        result.per_bin_candidate_union_windows.resize(batch.size());
+        for (std::size_t qi = 0; qi < batch.size(); ++qi)
+        {
+            std::vector<uint64_t> union_mask((batch[qi].windows.size() + 63) / 64, 0);
+            for (auto const & mask : region_masks[qi])
+            {
+                std::size_t count = 0;
+                for (std::size_t word = 0; word < mask.size(); ++word)
+                {
+                    count += std::popcount(mask[word]);
+                    union_mask[word] |= mask[word];
+                }
+                result.per_bin_region_exact_windows[qi].push_back(count);
+            }
+            for (uint64_t word : union_mask)
+                result.per_bin_candidate_union_windows[qi] += std::popcount(word);
+        }
+    }
     return result;
 }
 
@@ -1401,6 +1587,10 @@ struct Totals
     std::size_t exon_eligible = 0, exon_matched = 0;
     std::size_t discovered_locus_rows = 0, expected_valid_windows = 0, expected_locus_matched = 0;
     std::vector<std::size_t> bin_exact_present, bin_fp, bin_fn;
+    std::size_t per_bin_queries_with_candidates = 0, per_bin_candidate_bins = 0;
+    std::size_t per_bin_candidate_regions = 0, per_bin_verified_regions = 0;
+    std::size_t per_bin_rejected_regions = 0, per_bin_missed_exact_queries = 0;
+    std::size_t per_bin_exact_windows_outside_candidates = 0, per_bin_top_k_dropped = 0;
     double query_seconds = 0, exact_seconds = 0, result_seconds = 0;
 };
 
@@ -1578,7 +1768,8 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
                  ReferenceInfo const & info, PositionWriter & position_writer, Totals & totals,
                  std::ostream * repeat_class_out, RepeatBed const & query_bed, ExonBlocks const & exon_blocks,
                  std::ostream * reference_hit_class_out, RepeatBed const & reference_bed,
-                 std::ostream * loci_out, std::ostream * expected_out, ExpectedLoci const & expected_loci)
+                 std::ostream * loci_out, std::ostream * expected_out, ExpectedLoci const & expected_loci,
+                 std::ostream * per_bin_out, std::ostream * per_bin_candidates_out)
 {
     for (std::size_t qi = 0; qi < batch.size(); ++qi)
     {
@@ -1628,6 +1819,11 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
                              matched == 0 ? "NO_MATCH" :
                              static_cast<double>(matched) / q.valid_windows >= o.strict ? "PASS_STRICT" :
                              static_cast<double>(matched) / q.valid_windows >= o.basic ? "PASS_BASIC" : "LOW_SUPPORT";
+        std::string union_status = q.valid_windows == 0 ? "NO_VALID_KMERS" :
+                                   ibf_match == 0 ? "NO_MATCH" :
+                                   static_cast<double>(ibf_match) / q.valid_windows >= o.strict ? "PASS_STRICT" :
+                                   static_cast<double>(ibf_match) / q.valid_windows >= o.basic ? "PASS_BASIC" :
+                                   "LOW_SUPPORT";
         out << "2\t" << q.index << '\t' << q.id << '\t' << ref_id << '\t' << o.k << '\t'
             << q.total_windows << '\t' << q.valid_windows << '\t'
             << q.total_windows - q.valid_windows << '\t' << matched << '\t'
@@ -1789,6 +1985,73 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
         }
         else out << "\tNA\tNA\tNA\tNA\tNA";
         out << '\n';
+        if (per_bin_out)
+        {
+            bool verified = o.per_bin_exact_verify;
+            std::size_t best = 0, rejected = 0, verified_regions = 0;
+            std::size_t union_exact = verified && !exact_result.per_bin_candidate_union_windows.empty() ?
+                                      exact_result.per_bin_candidate_union_windows[qi] : 0;
+            auto const * region_counts = verified && !exact_result.per_bin_region_exact_windows.empty() ?
+                                         &exact_result.per_bin_region_exact_windows[qi] : nullptr;
+            if (verified && (region_counts == nullptr || union_exact > exact_count))
+                throw std::runtime_error("Inconsistent per-bin exact verification result");
+            for (std::size_t ri = 0; ri < q.per_bin_regions.size(); ++ri)
+            {
+                std::size_t local = verified ? (*region_counts)[ri] : 0;
+                best = std::max(best, local);
+                if (verified) { if (local) ++verified_regions; else ++rejected; }
+                auto const & region = q.per_bin_regions[ri];
+                *per_bin_candidates_out << "2\t" << q.index << '\t' << q.id << '\t' << ref_id << '\t'
+                                        << o.k << '\t' << ri + 1 << '\t' << info.ids[region.contig]
+                                        << '\t' << region.start << '\t' << region.end << '\t'
+                                        << std::min(region.end + o.k - 1, info.lengths[region.contig]) << '\t'
+                                        << region.bins << '\t' << region.max_hits << '\t' << region.sum_hits << '\t';
+                write_fraction(*per_bin_candidates_out, region.max_hits, q.valid_windows);
+                *per_bin_candidates_out << '\t';
+                if (verified) { *per_bin_candidates_out << local << '\t';
+                                write_fraction(*per_bin_candidates_out, local, q.valid_windows);
+                                *per_bin_candidates_out << '\t';
+                                write_fraction(*per_bin_candidates_out, local, exact_count); }
+                else *per_bin_candidates_out << "NA\tNA\tNA";
+                *per_bin_candidates_out << '\t' << (verified ? (local ? "VERIFIED" : "REJECTED") : "UNVERIFIED")
+                                        << '\n';
+            }
+            std::string per_bin_status = !q.valid_windows ? "NO_VALID_KMERS" :
+                                         q.per_bin_regions.empty() ? "NO_CANDIDATE" :
+                                         !verified ? "CANDIDATE_UNVERIFIED" :
+                                         best ? "VERIFIED_CANDIDATE" : "CANDIDATE_REJECTED";
+            *per_bin_out << "2\t" << q.index << '\t' << q.id << '\t' << ref_id << '\t' << o.k
+                         << '\t' << q.valid_windows << '\t';
+            if (verified) { *per_bin_out << exact_count << '\t'; write_fraction(*per_bin_out, exact_count, q.valid_windows); }
+            else *per_bin_out << "NA\tNA";
+            *per_bin_out << '\t' << ibf_match << '\t'; write_fraction(*per_bin_out, ibf_match, q.valid_windows);
+            *per_bin_out << '\t' << q.max_bin_hits << '\t';
+            write_fraction(*per_bin_out, q.max_bin_hits, q.valid_windows);
+            *per_bin_out << '\t' << q.candidate_bins_before_top_k << '\t'
+                         << q.per_bin_candidates.size() << '\t' << q.per_bin_regions.size() << '\t'
+                         << q.candidate_bins_before_top_k - q.per_bin_candidates.size() << '\t';
+            if (verified)
+            {
+                *per_bin_out << best << '\t'; write_fraction(*per_bin_out, best, q.valid_windows);
+                *per_bin_out << '\t'; write_fraction(*per_bin_out, best, exact_count);
+                *per_bin_out << '\t' << union_exact << '\t' << exact_count - union_exact << '\t'
+                             << verified_regions << '\t' << rejected;
+            }
+            else *per_bin_out << "NA\tNA\tNA\tNA\tNA\tNA\tNA";
+            *per_bin_out << '\t' << union_status << '\t' << per_bin_status << '\t'
+                         << (verified ? status : "NA") << '\n';
+            totals.per_bin_queries_with_candidates += !q.per_bin_regions.empty();
+            totals.per_bin_candidate_bins += q.per_bin_candidates.size();
+            totals.per_bin_candidate_regions += q.per_bin_regions.size();
+            totals.per_bin_verified_regions += verified_regions;
+            totals.per_bin_rejected_regions += rejected;
+            totals.per_bin_top_k_dropped += q.candidate_bins_before_top_k - q.per_bin_candidates.size();
+            if (verified)
+            {
+                totals.per_bin_exact_windows_outside_candidates += exact_count - union_exact;
+                totals.per_bin_missed_exact_queries += exact_count > 0 && best == 0;
+            }
+        }
         if (repeat_class_out)
             for (auto const & [class_id, counts] : class_counts)
             {
@@ -1885,13 +2148,15 @@ int run(Options o)
     RepeatBed reference_bed = load_repeat_bed(o.reference_repeat_bed, o.max_repeat_intervals);
     RepeatBed query_bed = load_repeat_bed(o.query_repeat_bed, o.max_repeat_intervals);
     ReferenceInfo info = inspect_reference(o, reference_bed);
-    if (o.mode == "ibf" || o.genome_fpr_given)
+    if ((o.mode == "ibf" && !o.fdr_control_per_bin) || o.genome_fpr_given)
         o.fpr = std::min(o.fpr, o.genome_fpr / std::max<std::size_t>(1, info.bin_count));
     double nominal_any_bin_fpr = -std::expm1(static_cast<double>(info.bin_count) * std::log1p(-o.fpr));
     if (o.mode != "exact" && nominal_any_bin_fpr > 0.1)
         std::cerr << "Warning: nominal any-bin false-positive probability is " << nominal_any_bin_fpr
                   << " across " << info.bin_count << " bins. IBF-only recovery can be unreliable; "
                      "use exact-verified results for classification.\n";
+    if (o.fdr_control_per_bin && !o.per_bin_exact_verify)
+        std::cerr << "Warning: per-bin candidate scores are unverified IBF evidence, not exact recovery or FDR control.\n";
     for (auto const & [id, intervals] : reference_bed.intervals)
     {
         auto it = std::find(info.ids.begin(), info.ids.end(), id);
@@ -1939,7 +2204,7 @@ int run(Options o)
     std::size_t index_peak = peak_rss_bytes();
     double occupancy_estimate = -1, occupancy_guard_seconds = 0;
     std::size_t occupancy_guard_peak = 0;
-    if (o.mode == "ibf")
+    if (o.mode == "ibf" && !o.fdr_control_per_bin)
     {
         auto guard_start = Clock::now();
         occupancy_estimate = observed_ibf_union_estimate(*ibf, info, o);
@@ -1975,6 +2240,28 @@ int run(Options o)
            "\tbest_locus_recovery\tbest_locus_contig\tbest_locus_start\tbest_locus_end"
            "\texpected_locus_count\texpected_locus_matched_windows\texpected_locus_recovery"
            "\toff_expected_locus_windows\texpected_locus_hit_rows\n";
+    std::ofstream per_bin_file, per_bin_candidates_file;
+    if (o.fdr_control_per_bin)
+    {
+        fs::create_directories(o.per_bin_output.parent_path().empty() ? fs::path{"."} :
+                               o.per_bin_output.parent_path());
+        per_bin_file.open(o.per_bin_output);
+        per_bin_candidates_file.open(o.per_bin_output.string() + ".candidates.tsv");
+        if (!per_bin_file || !per_bin_candidates_file)
+            throw std::runtime_error("Cannot write per-bin output " + o.per_bin_output.string());
+        per_bin_file << "schema_version\tquery_index\tquery_id\treference_id\tk\tvalid_windows"
+                        "\texact_global_matched_windows\texact_global_recovery\tibf_union_matched_windows"
+                        "\tibf_union_recovery\tmax_bin_hits\tmax_bin_support\tcandidate_bins_before_top_k"
+                        "\tcandidate_bin_count\tcandidate_locus_count\ttop_k_dropped_bins"
+                        "\tbest_locus_exact_matched_windows\tbest_locus_exact_recovery"
+                        "\tbest_locus_exact_concentration\tcandidate_union_exact_matched_windows"
+                        "\tglobal_exact_windows_outside_candidates\tverified_candidate_loci"
+                        "\trejected_candidate_loci\tunion_status\tper_bin_status\texact_status\n";
+        per_bin_candidates_file << "schema_version\tquery_index\tquery_id\treference_id\tk\trank"
+                                   "\tcontig\tstart\tend\tsequence_end\tcandidate_bin_count\tmax_bin_hits"
+                                   "\tsum_bin_hits\tmax_bin_support\texact_local_matched_windows"
+                                   "\texact_local_recovery\texact_concentration\tverification_status\n";
+    }
     PositionWriter position_writer{o.positions};
     std::ofstream repeat_class_file;
     if (!o.repeat_classes.empty())
@@ -2051,7 +2338,9 @@ int run(Options o)
                     repeat_class_file.is_open() ? &repeat_class_file : nullptr, query_bed, exon_blocks,
                     reference_hit_class_file.is_open() ? &reference_hit_class_file : nullptr, reference_bed,
                     loci_file.is_open() ? &loci_file : nullptr,
-                    expected_file.is_open() ? &expected_file : nullptr, expected_loci);
+                    expected_file.is_open() ? &expected_file : nullptr, expected_loci,
+                    per_bin_file.is_open() ? &per_bin_file : nullptr,
+                    per_bin_candidates_file.is_open() ? &per_bin_candidates_file : nullptr);
         totals.result_seconds += elapsed(t);
         batch.clear(); batch_size = 0; batch_positive_bin_pairs = 0;
     };
@@ -2070,8 +2359,9 @@ int run(Options o)
                     throw std::runtime_error("Exon block outside query: " + query_id);
         auto t = Clock::now();
         Query q = make_query(query_id, query_index++, sequence, o, ibf.get(), query_bed);
+        prepare_per_bin_query(q, o, info);
         totals.query_seconds += elapsed(t);
-        if (o.mode == "calibrate")
+        if (o.mode == "calibrate" || o.fdr_control_per_bin)
         {
             if (q.positive_bin_pairs > o.max_ibf_bin_pairs - batch_positive_bin_pairs)
                 flush();
@@ -2135,6 +2425,13 @@ int run(Options o)
     }
     if (!out) throw std::runtime_error("Failed writing result TSV");
     out.close();
+    if (per_bin_file.is_open())
+    {
+        per_bin_file.close();
+        per_bin_candidates_file.close();
+        if (!per_bin_file || !per_bin_candidates_file)
+            throw std::runtime_error("Failed writing per-bin output");
+    }
     std::size_t absent_bin_pairs = 0, fp_bin_pairs = 0, fn_bin_pairs = 0;
     std::size_t occupied_bits_total = 0;
     double occupancy_seconds = 0;
@@ -2220,6 +2517,13 @@ int run(Options o)
             << "  \"expected_loci_output\": " << json_string(o.expected_loci_output.string()) << ",\n"
             << "  \"max_expected_loci\": " << o.max_expected_loci << ",\n"
             << "  \"max_query_bases\": " << o.max_query_bases << ",\n"
+            << "  \"fdr_control_per_bin\": " << (o.fdr_control_per_bin ? "true" : "false") << ",\n"
+            << "  \"per_bin_exact_verify\": " << (o.per_bin_exact_verify ? "true" : "false") << ",\n"
+            << "  \"per_bin_min_hits\": " << o.per_bin_min_hits << ",\n"
+            << "  \"per_bin_min_fraction\": " << o.per_bin_min_fraction << ",\n"
+            << "  \"per_bin_top_k\": " << o.per_bin_top_k << ",\n"
+            << "  \"per_bin_max_locus_gap\": " << o.per_bin_max_locus_gap << ",\n"
+            << "  \"per_bin_output\": " << json_string(o.per_bin_output.string()) << ",\n"
             << "  \"threshold_source\": " << json_string(o.threshold_source) << ",\n"
             << "  \"threshold_table\": " << json_string(o.threshold_table.string()) << ",\n"
             << "  \"training_control_set\": " << json_string(o.training_control_set) << ",\n"
@@ -2240,13 +2544,15 @@ int run(Options o)
             << "  \"configured_per_bin_fpr\": " << o.fpr << ",\n"
             << "  \"requested_per_bin_fpr_cap\": " << o.requested_per_bin_fpr << ",\n"
             << "  \"target_genome_wide_fpr\": ";
-    if (o.mode == "ibf" || o.genome_fpr_given) metrics << o.genome_fpr; else metrics << "null";
+    if ((o.mode == "ibf" && !o.fdr_control_per_bin) || o.genome_fpr_given)
+        metrics << o.genome_fpr;
+    else metrics << "null";
     metrics << ",\n  \"observed_occupancy_union_estimate\": ";
-    if (o.mode == "ibf") metrics << occupancy_estimate; else metrics << "null";
+    if (o.mode == "ibf" && !o.fdr_control_per_bin) metrics << occupancy_estimate; else metrics << "null";
     metrics << ",\n  \"occupancy_guard_seconds\": ";
-    if (o.mode == "ibf") metrics << occupancy_guard_seconds; else metrics << "null";
+    if (o.mode == "ibf" && !o.fdr_control_per_bin) metrics << occupancy_guard_seconds; else metrics << "null";
     metrics << ",\n  \"peak_rss_after_occupancy_guard_bytes\": ";
-    if (o.mode == "ibf") metrics << occupancy_guard_peak; else metrics << "null";
+    if (o.mode == "ibf" && !o.fdr_control_per_bin) metrics << occupancy_guard_peak; else metrics << "null";
     metrics << ",\n  \"fragment_output_seconds\": " << fragment_seconds
             << ",\n  \"peak_rss_after_fragment_output_bytes\": " << fragment_peak
             << ",\n"
@@ -2271,6 +2577,15 @@ int run(Options o)
             << "  \"valid_reference_windows\": " << info.valid_windows << ",\n"
             << "  \"query_count\": " << totals.queries << ",\n"
             << "  \"valid_query_windows\": " << totals.valid << ",\n"
+            << "  \"per_bin_queries_with_candidates\": " << totals.per_bin_queries_with_candidates << ",\n"
+            << "  \"per_bin_candidate_bins\": " << totals.per_bin_candidate_bins << ",\n"
+            << "  \"per_bin_candidate_loci\": " << totals.per_bin_candidate_regions << ",\n"
+            << "  \"per_bin_verified_candidate_loci\": " << totals.per_bin_verified_regions << ",\n"
+            << "  \"per_bin_rejected_candidate_loci\": " << totals.per_bin_rejected_regions << ",\n"
+            << "  \"per_bin_missed_global_exact_queries\": " << totals.per_bin_missed_exact_queries << ",\n"
+            << "  \"per_bin_global_exact_windows_outside_candidates\": "
+            << totals.per_bin_exact_windows_outside_candidates << ",\n"
+            << "  \"per_bin_top_k_dropped_bins\": " << totals.per_bin_top_k_dropped << ",\n"
             << "  \"discovered_locus_rows\": ";
     if (o.loci_output.empty()) metrics << "null"; else metrics << totals.discovered_locus_rows;
     metrics << ",\n  \"expected_locus_matched_windows\": ";
