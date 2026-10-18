@@ -1,5 +1,91 @@
 # FragIncRNA
-[![CMake tests](https://github.com/GPSeq/FragIncRNA/actions/workflows/cmake-single-platform.yml/badge.svg?branch=main)](https://github.com/GPSeq/FragIncRNA/actions/workflows/cmake-single-platform.yml)   
+
+The selectable production workflow is now available as schema 3. Use
+`--mode ibf --scoring-method per_bin_verified` for IBF candidates followed by
+exact verification within indexed candidate intervals. The main recovery and
+status then use candidate-local verified support. It is a lower bound on
+whole-reference exact recovery; it is not the same biological quantity.
+See the [production audit](docs/PER_BIN_PRODUCTION_AUDIT.md),
+[current method](docs/PER_BIN_IBF_METHOD.md),
+[measured benchmark](docs/PER_BIN_PRODUCTION_BENCHMARK.md), and
+[acceptance status](docs/PER_BIN_PRODUCTION_STATUS.md).
+
+Ready-to-run fixture examples, after the measured build below:
+
+```bash
+python3 scripts/measure_command.py --output /tmp/frag-configure.json -- cmake -S . -B build-production -DCMAKE_CXX_COMPILER=/usr/bin/g++-13 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DLNCRNA_MERS_ENABLE_HIBF=OFF
+python3 scripts/measure_command.py --output /tmp/frag-build.json -- cmake --build build-production -j 4
+python3 scripts/measure_command.py --output /tmp/frag-tests.json -- ctest --test-dir build-production --output-on-failure
+python3 scripts/measure_command.py --output /tmp/frag-production.json -- build-production/lncrna_mers_v2 --config configs/per_bin_production.toml
+python3 scripts/measure_command.py --output /tmp/frag-validate.json -- build-production/lncrna_mers_v2 --config configs/per_bin_production.toml --mode validate --output /tmp/frag-validate.tsv
+python3 scripts/measure_command.py --output /tmp/frag-calibrate.json -- build-production/lncrna_mers_v2 --config configs/per_bin_production.toml --mode calibrate --output /tmp/frag-calibrate.tsv
+```
+
+The fixture uses k=4/4-base bins and a one-hit threshold solely for executable
+checks. For research, set the supplied v49 query/reference paths, k=20,
+fragment_size=80000 and per_bin_min_hits=2; the 5%/top-64 rule is heuristic.
+Run one reference per invocation. The [bounded runner](scripts/run_per_bin_production_benchmark.py)
+processes 100 then 5,000 queries and never launches the full manuscript grid.
+The data-preparation script stages and validates an extraction before exposing it.
+
+After preparing the supplied v49 subsets and complete first contig, these use
+the same real-data settings as the benchmark (outputs are new example files):
+
+```bash
+python3 scripts/measure_command.py --output /tmp/v49-production.json -- build-production/lncrna_mers_v2 --config configs/per_bin_v49_bounded.toml --load-index results/per_bin_production_validation/complete_chr1/k20_nominal.ibf --reference-cache results/per_bin_production_validation/complete_chr1/reference.bases --output /tmp/v49-production.tsv
+python3 scripts/measure_command.py --output /tmp/v49-validate.json -- build-production/lncrna_mers_v2 --config configs/per_bin_v49_bounded.toml --mode validate --load-index results/per_bin_production_validation/complete_chr1/k20_nominal.ibf --reference-cache results/per_bin_production_validation/complete_chr1/reference.bases --output /tmp/v49-validate.tsv
+python3 scripts/measure_command.py --output /tmp/v49-calibrate.json -- build-production/lncrna_mers_v2 --config configs/per_bin_v49_bounded.toml --mode calibrate --load-index results/per_bin_production_validation/complete_chr1/k20_nominal.ibf --reference-cache results/per_bin_production_validation/complete_chr1/reference.bases --output /tmp/v49-calibrate.tsv
+```
+
+Omit `--load-index` on first use to build instead. The indexed reference here
+is one complete macaque contig, not all 22 contigs. Validation/calibration scan
+the full supplied reference independently; production does not. **Do not use
+the default candidate filter as a drop-in global-recovery replacement:** on
+the 5,000-query sample it missed 36.34% of exact-positive windows and 3,005 of
+4,482 queries with any exact support. Biological accuracy is not established.
+
+Choose `global_ibf` for historical any-bin recovery, `per_bin_ibf` for
+approximate support in selected bins, `per_bin_verified` for exact membership
+in selected intervals, or `global_exact` for independent full-reference
+membership. Validation reports all four, even if exact remains primary.
+Old unspecified exact/global invocations retain schema 2; per-bin IBF
+production and explicit scoring use schema 3 with method/scope/provenance.
+The merger checks source, scoring, schema, thresholds and candidate settings.
+
+`--ibf-auto-tune off|recommend|apply` diagnoses settings and writes
+`<output>.ibf_tuning.json`. Explicit off/recommend retains settings; apply
+can budget a global-IBF objective using `--genome-fpr`. Per-bin methods retain
+their design settings and recommend measured candidate-recall validation.
+Unspecified legacy global-IBF invocations preserve their previous automatic
+whole-reference budget; this compatibility rule is explicitly logged.
+`--ibf-max-index-memory-gb` preflights raw index bytes; it is not a total
+process RSS cap. Dry-run uses `--ibf-dry-run`. Loaded archives are checked and
+never resized/rebuilt silently. Fragment alternatives are estimates, never
+automatic scientific-setting changes. Per-bin Bloom FPR, approximate union
+FPR, transcript classification errors and biological FDR are distinct.
+
+`--threads 15` uses OpenMP for bounded query and interval work; actual workers
+are capped by available resources and recorded. Default is 1. Explicit threads
+wins over OMP_NUM_THREADS. Index building/global exact scans remain serial.
+Without OpenMP the binary reports serial fallback. A normalized original-base
+cache enables random access for plain/ordinary gzip FASTA; use
+`--reference-cache FILE` for reuse. Original-reference inspection and cache
+checksum cost remain in total time. The candidate-only byte counter excludes
+this separately reported provenance/preparation I/O.
+
+Persistent UTC text logs and matching JSONL default to `<output>.log` and
+`<output>.log.jsonl`. Levels are trace/debug/info/warning/error/off;
+`--no-log-to-console` disables console copies. Progress uses
+`--progress-interval-seconds` and bounded `--progress-every-queries` batches.
+Debug adds per-query scoring events; `--log-per-query`/`--log-per-bin` explicitly
+enable expensive detail. Lines flush immediately. Signals/worker exceptions
+produce terminal error events where graceful termination is possible.
+Schema-3 main TSV/metrics finalize by rename; failed sidecars/partial files
+must not be treated as successful runs. SIGKILL cannot produce a footer.
+
+The older schema-2 documentation below is retained for compatibility/history;
+its full-reference candidate verifier and IBF-only restrictions are superseded.
+[![CMake tests](https://github.com/GPSeq/FragIncRNA/actions/workflows/cmake-single-platform.yml/badge.svg?branch=reporting)](https://github.com/GPSeq/FragIncRNA/actions/workflows/cmake-single-platform.yml)
 `FragIncRNA` builds per-reference fragment indexes from FASTA references, queries lncRNA sequences against them, and writes match summaries plus unique matching k-mers. The index backend can be either a flat `ibf` or a hierarchical `hibf`.
 
 ## Corrected k-mer analysis (schema 2 preview)
@@ -51,7 +137,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-If sdsl-lite is causing any errors from seqan3 build, use: 
+If sdsl-lite is causing any errors from seqan3 build, use:
 
 ```bash
 git clone https://github.com/xxsds/sdsl-lite.git
@@ -134,7 +220,7 @@ cmake -S . -B build \
 cmake --build build -j
 ```
 
-After building with a supported compiler, enable HIBF in [config.toml](/mnt/c/Users/yynk1/Desktop/FragIncRNA/config.toml:1):
+After building with a supported compiler, enable HIBF in [config.toml](config.toml):
 
 ```toml
 [general]
@@ -145,7 +231,7 @@ index_method = "hibf"
 
 The program now reads its settings from a TOML file instead of command-line flags.
 
-1. Edit [config.toml](/mnt/c/Users/yynk1/Desktop/FragIncRNA/config.toml).
+1. Edit [config.toml](config.toml).
 2. Run:
 
 ```bash

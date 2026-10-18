@@ -42,7 +42,7 @@ def next_row(reader, path, expected_index):
     row = next(reader, None)
     if row is None:
         return None
-    if row.get("schema_version") != "2" or int(row["query_index"]) != expected_index:
+    if row.get("schema_version") not in ("2", "3") or int(row["query_index"]) != expected_index:
         raise ValueError(f"Unexpected schema or query order in {path} at index {expected_index}")
     return row
 
@@ -69,16 +69,24 @@ def main():
         common_settings = None
         common_primary_source = None
         common_ibf_target = None
+        common_scoring = None
+        common_schema = None
         for path in args.input:
             manifest_path = pathlib.Path(str(path) + ".metrics.json")
             manifest = json.loads(manifest_path.read_text())
             primary_source = manifest.get("primary_match_source")
-            if primary_source not in ("ibf", "exact"):
+            if primary_source not in ("ibf", "exact", "ibf_candidates", "candidate_exact"):
                 raise ValueError(f"Missing or invalid primary_match_source in {manifest_path}")
             if common_primary_source is None:
                 common_primary_source = primary_source
             elif primary_source != common_primary_source:
                 raise ValueError("Primary match sources differ across reference runs")
+            scoring = manifest.get("scoring_method", "global_ibf" if primary_source == "ibf" else "global_exact")
+            schema = manifest.get("schema_version", 2)
+            if common_scoring is None:
+                common_scoring, common_schema = scoring, schema
+            elif scoring != common_scoring or schema != common_schema:
+                raise ValueError("Scoring methods or schema versions differ across reference runs")
             query_hash = manifest["query_sequence_sha256"]
             if common_query_hash is None:
                 common_query_hash = query_hash
@@ -95,8 +103,12 @@ def main():
             first = next_row(reader, path, 0)
             if first is None:
                 raise ValueError(f"No query rows in {path}")
+            if first["schema_version"] != str(schema):
+                raise ValueError("TSV and manifest schema versions differ")
+            if schema == 3 and (first.get("scoring_method") != scoring or first.get("primary_match_source") != primary_source):
+                raise ValueError("TSV and manifest scoring provenance differ")
             settings = tuple(first[field] for field in COMPARABLE)
-            if primary_source == "ibf":
+            if primary_source == "ibf" and manifest.get("target_genome_wide_fpr") is not None:
                 ibf_target = (manifest.get("target_genome_wide_fpr"),
                               manifest.get("requested_per_bin_fpr_cap"))
                 if None in ibf_target:
@@ -107,6 +119,9 @@ def main():
                     raise ValueError("IBF-wide FPR targets or per-bin caps differ across reference runs")
             else:
                 settings += (first["configured_per_bin_fpr"],)
+            if schema == 3:
+                settings += tuple(manifest.get(key) for key in ("per_bin_min_hits", "per_bin_min_fraction",
+                    "per_bin_top_k", "per_bin_max_locus_gap", "per_bin_exact_verify", "max_locus_span", "mask_target"))
             if common_settings is None:
                 common_settings = settings
             elif settings != common_settings:
@@ -139,6 +154,12 @@ def main():
                 row = bundle["row"]
                 if row["query_id"] != query_id or row["reference_id"] != bundle["reference_id"]:
                     raise ValueError(f"Query/reference identity mismatch at index {query_count}")
+                manifest = bundle["manifest"]
+                if row["schema_version"] != str(manifest.get("schema_version",2)):
+                    raise ValueError("TSV and manifest schema versions differ")
+                if row["schema_version"] == "3" and (row.get("scoring_method") != manifest["scoring_method"] or
+                        row.get("primary_match_source") != manifest["primary_match_source"]):
+                    raise ValueError("TSV and manifest scoring provenance differ")
                 if (tuple(row[field] for field in COMPARABLE) +
                         (row["configured_per_bin_fpr"],)) != bundle["local_settings"]:
                     raise ValueError(f"Settings change within {bundle['path']}")

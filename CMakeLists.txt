@@ -75,6 +75,18 @@ add_executable(lncrna_mers
 find_package(ZLIB REQUIRED)
 add_executable(lncrna_mers_v2 src/kmer_v2.cpp)
 target_link_libraries(lncrna_mers_v2 PRIVATE seqan3::seqan3 ZLIB::ZLIB)
+option(LNCRNA_MERS_ENABLE_OPENMP "Enable v2 query/interval OpenMP parallelism" ON)
+if (LNCRNA_MERS_ENABLE_OPENMP)
+    find_package(OpenMP COMPONENTS CXX)
+    if (OpenMP_CXX_FOUND)
+        target_link_libraries(lncrna_mers_v2 PRIVATE OpenMP::OpenMP_CXX)
+    else()
+        message(WARNING "OpenMP unavailable: v2 will report and use serial fallback")
+    endif()
+endif()
+execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE FRAGLNCRNA_GIT_SHA OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+target_compile_definitions(lncrna_mers_v2 PRIVATE FRAGLNCRNA_GIT_SHA="${FRAGLNCRNA_GIT_SHA}")
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(lncrna_mers_v2 PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -107,6 +119,9 @@ if (BUILD_TESTING)
     )
 
     add_test(NAME lncrna_mers_tests COMMAND lncrna_mers_tests)
+    add_executable(bloom_sizing_tests tests/unit/test_bloom_sizing.cpp)
+    target_include_directories(bloom_sizing_tests PRIVATE src)
+    add_test(NAME bloom_sizing_tests COMMAND bloom_sizing_tests)
     add_test(NAME kmer_v2_integration
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_kmer_v2.py
                      $<TARGET_FILE:lncrna_mers_v2>)
@@ -115,6 +130,9 @@ if (BUILD_TESTING)
                      $<TARGET_FILE:lncrna_mers_v2>)
     add_test(NAME per_bin_ibf
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_per_bin_ibf.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
+    add_test(NAME per_bin_production
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_per_bin_production.py
                      $<TARGET_FILE:lncrna_mers_v2>)
     add_test(NAME legacy_score_regression
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_legacy_score.py
@@ -127,6 +145,13 @@ if (BUILD_TESTING)
     add_test(NAME multi_reference_merge
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_merge_kmer_v2.py
                      $<TARGET_FILE:lncrna_mers_v2>)
+    add_test(NAME production_reference_merge
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_merge_production.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
+    add_test(NAME production_benchmark_runner
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_production_runner.py)
+    add_test(NAME command_resource_measurement
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_measure_command.py)
     add_test(NAME kmer_v2_provenance_loci
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_kmer_v2_provenance_loci.py
                      $<TARGET_FILE:lncrna_mers_v2>)

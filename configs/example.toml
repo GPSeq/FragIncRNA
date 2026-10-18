@@ -46,8 +46,8 @@ load_index = ""                  # path.ibf to load, mutually exclusive above
 # it does not guarantee statistical false discovery rate control. The score is
 # H_b / valid query windows for each original genomic bin. Candidate bins need
 # at least both min_hits and min_fraction; defaults are heuristic, not trained.
-# Exact verification scans original reference bases and is enabled by default.
-# Set mode = "ibf" and per_bin_exact_verify = false for unverified diagnostics;
+# Exact verification fetches selected intervals from a checksum-validated cache.
+# Set mode = "ibf" and per_bin_exact_verify = true for production scoring;
 # in that setting the historical high-FPR index can be reused with fpr = 0.01.
 # With mode = "validate", a matching saved high- or low-FPR index can be reused.
 fdr_control_per_bin = false
@@ -117,3 +117,21 @@ max_query_bases = 50000000
 max_ibf_bin_pairs = 10000000
 max_calibration_pairs = 10000000
 # calibration_bins = "/tmp/fraglncrna-v2-bins.tsv"
+
+# Explicit scoring selects schema 3. Omit for legacy schema-2 exact/global
+# invocations. With mode=ibf and per-bin enabled, the default is verified-local.
+# scoring_method = "global_exact" # global_ibf|per_bin_ibf|per_bin_verified|global_exact
+threads = 1                     # explicit value wins over OMP_NUM_THREADS
+reference_cache = ""            # reusable normalized bases; empty uses a temporary copy
+log_file = ""                   # default <output>.log plus .log.jsonl
+log_level = "info"              # trace|debug|info|warning|error|off
+log_to_console = true
+log_per_query = false
+log_per_bin = false
+progress_interval_seconds = 10
+progress_every_queries = 1000
+ibf_auto_tune = "recommend"      # off|recommend|apply; per-bin settings retained
+ibf_max_index_memory_gb = 0      # decimal GB, 0 = no explicit index cap
+ibf_fail_on_unsafe_settings = false
+ibf_tuning_report = ""          # <output>.ibf_tuning.json
+ibf_dry_run = false

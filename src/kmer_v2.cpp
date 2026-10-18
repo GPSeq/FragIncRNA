@@ -37,9 +37,13 @@
 #include <utility>
 #include <vector>
 #include <unistd.h>
+#include "production_runtime.hpp"
+#include "bloom_sizing.hpp"
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
+using fraglncrna::planned_bin_bits;
+using fraglncrna::planned_index_bytes;
 
 namespace
 {
@@ -51,6 +55,12 @@ struct Options
     fs::path loci_output, expected_loci_bed, expected_loci_output;
     fs::path save_index, load_index;
     fs::path threshold_table, per_bin_output;
+    fs::path reference_cache, log_file, ibf_tuning_report;
+    std::string scoring_method, ibf_auto_tune = "recommend", log_level = "info";
+    bool explicit_scoring = false, legacy_global_budget = false, ibf_dry_run = false, auto_tune_given = false;
+    bool ibf_fail_on_unsafe_settings = false, log_to_console = true, log_per_query = false, log_per_bin = false;
+    std::size_t threads = 1, actual_threads = 1, progress_every_queries = 1000;
+    double progress_interval_seconds = 10, ibf_max_index_memory_gb = 0;
     std::size_t k = 15, fragment_size = 8000, hash_functions = 3, batch_windows = 100000;
     std::size_t local_window = 0, max_position_rows = 1000000, max_calibration_pairs = 10000000;
     std::size_t max_ibf_bin_pairs = 10000000;
@@ -161,9 +171,17 @@ std::string sha256_file(fs::path const & path, std::uint64_t offset = 0)
     }
     fraglncrna::Sha256 sha;
     std::array<char, 65536> buffer{};
+    std::size_t hashed_bytes = 0;
     while (input.read(buffer.data(), buffer.size()) || input.gcount())
+    {
         for (std::streamsize i = 0; i < input.gcount(); ++i)
             sha.update(static_cast<unsigned char>(buffer[static_cast<std::size_t>(i)]));
+        hashed_bytes += static_cast<std::size_t>(input.gcount());
+        if (hashed_bytes % 1048576 == 0) {
+            fraglncrna::check_stop();
+            fraglncrna::production_log.progress("checksum","file=" + path.string() + " bytes=" + std::to_string(hashed_bytes));
+        }
+    }
     if (!input.eof()) throw std::runtime_error("Failed reading " + path.string());
     return sha.hex_digest();
 }
@@ -173,6 +191,15 @@ std::string sha256_text(std::string_view value)
     fraglncrna::Sha256 sha;
     sha.update(value);
     return sha.hex_digest();
+}
+
+fs::path unique_staging_path(fs::path const & destination) {
+    std::string pattern = destination.string() + ".partial.XXXXXX";
+    std::vector<char> name(pattern.begin(),pattern.end()); name.push_back('\0');
+    int descriptor = mkstemp(name.data());
+    if (descriptor < 0) throw std::runtime_error("Cannot create staging file for " + destination.string());
+    close(descriptor);
+    return fs::path{name.data()};
 }
 
 void sha256_u64(fraglncrna::Sha256 & sha, uint64_t value)
@@ -252,7 +279,7 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     std::size_t line_number = 0;
     auto is_integer = [](std::string const & key)
     {
-        return key == "k" || key == "fragment_size" || key == "hash_functions" ||
+        return key == "threads" || key == "progress_every_queries" || key == "k" || key == "fragment_size" || key == "hash_functions" ||
                key == "batch_windows" || key == "local_window" || key == "max_position_rows" ||
                key == "max_calibration_pairs" || key == "max_ibf_bin_pairs" ||
                key == "max_repeat_intervals" || key == "max_exon_blocks" ||
@@ -263,12 +290,14 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     };
     auto is_real = [](std::string const & key)
     {
-        return key == "fpr" || key == "genome_fpr" || key == "basic_threshold" ||
+        return key == "progress_interval_seconds" || key == "ibf_max_index_memory_gb" || key == "fpr" || key == "genome_fpr" || key == "basic_threshold" ||
                key == "strict_threshold" || key == "per_bin_min_fraction";
     };
     auto is_string = [](std::string const & key)
     {
-        return key == "reference" || key == "queries" || key == "output" || key == "metrics" ||
+        return key == "scoring_method" || key == "ibf_auto_tune" || key == "ibf_tuning_report" ||
+               key == "log_file" || key == "log_level" || key == "reference_cache" ||
+               key == "reference" || key == "queries" || key == "output" || key == "metrics" ||
                key == "positions" || key == "calibration_bins" || key == "fragments" ||
                key == "reference_repeat_bed" || key == "query_repeat_bed" ||
                key == "repeat_classes" || key == "reference_hit_classes" || key == "exon_blocks" ||
@@ -280,7 +309,9 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     };
     auto is_boolean = [](std::string const & key)
     {
-        return key == "fdr_control_per_bin" || key == "per_bin_exact_verify";
+        return key == "ibf_fail_on_unsafe_settings" || key == "ibf_dry_run" || key == "log_to_console" ||
+               key == "log_per_query" || key == "log_per_bin" ||
+               key == "fdr_control_per_bin" || key == "per_bin_exact_verify";
     };
     while (std::getline(input, raw))
     {
@@ -424,13 +455,29 @@ Options parse_options(int argc, char ** argv)
                          "[--per-bin-exact-verify | --no-per-bin-exact-verify] "
                          "[--per-bin-output OUT.tsv] "
                          "[--save-index INDEX.ibf | --load-index INDEX.ibf] "
-                         "[--metrics OUT.json]\n";
+                         "[--metrics OUT.json] [--scoring-method global_ibf|per_bin_ibf|per_bin_verified|global_exact] "
+                         "[--threads 1] [--reference-cache BASES.bin] "
+                         "[--ibf-auto-tune off|recommend|apply] [--ibf-max-index-memory-gb 0] "
+                         "[--ibf-fail-on-unsafe-settings] [--ibf-dry-run] [--ibf-tuning-report FILE.json] "
+                         "[--log-file FILE] [--log-level trace|debug|info|warning|error|off] "
+                         "[--no-log-to-console] [--progress-interval-seconds 10] "
+                         "[--progress-every-queries 1000] [--log-per-query] [--log-per-bin]\n";
             std::exit(0);
         }
         if (key == "--fdr-control-per-bin") { o.fdr_control_per_bin = true; continue; }
         if (key == "--no-fdr-control-per-bin") { o.fdr_control_per_bin = false; continue; }
         if (key == "--per-bin-exact-verify") { o.per_bin_exact_verify = true; continue; }
         if (key == "--no-per-bin-exact-verify") { o.per_bin_exact_verify = false; continue; }
+        if (key == "--ibf-fail-on-unsafe-settings") { o.ibf_fail_on_unsafe_settings = true; continue; }
+        if (key == "--no-ibf-fail-on-unsafe-settings") { o.ibf_fail_on_unsafe_settings = false; continue; }
+        if (key == "--ibf-dry-run") { o.ibf_dry_run = true; continue; }
+        if (key == "--no-ibf-dry-run") { o.ibf_dry_run = false; continue; }
+        if (key == "--log-to-console") { o.log_to_console = true; continue; }
+        if (key == "--no-log-to-console") { o.log_to_console = false; continue; }
+        if (key == "--log-per-query") { o.log_per_query = true; continue; }
+        if (key == "--no-log-per-query") { o.log_per_query = false; continue; }
+        if (key == "--log-per-bin") { o.log_per_bin = true; continue; }
+        if (key == "--no-log-per-bin") { o.log_per_bin = false; continue; }
         if (i + 1 >= args.size()) throw std::runtime_error("Missing value for " + key);
         std::string value = args[++i];
         if (key == "--reference") o.reference = value;
@@ -454,6 +501,16 @@ Options parse_options(int argc, char ** argv)
         else if (key == "--threshold-table") o.threshold_table = value;
         else if (key == "--evaluation-control-set") o.evaluation_control_set = value;
         else if (key == "--per-bin-output") o.per_bin_output = value;
+        else if (key == "--scoring-method") { o.scoring_method = value; o.explicit_scoring = true; }
+        else if (key == "--threads") o.threads = parse_size(value, key);
+        else if (key == "--reference-cache") o.reference_cache = value;
+        else if (key == "--log-file") o.log_file = value;
+        else if (key == "--log-level") o.log_level = value;
+        else if (key == "--progress-every-queries") o.progress_every_queries = parse_size(value, key);
+        else if (key == "--progress-interval-seconds") o.progress_interval_seconds = std::stod(value);
+        else if (key == "--ibf-auto-tune") { o.ibf_auto_tune = value; o.auto_tune_given = true; }
+        else if (key == "--ibf-max-index-memory-gb") o.ibf_max_index_memory_gb = std::stod(value);
+        else if (key == "--ibf-tuning-report") o.ibf_tuning_report = value;
         else if (key == "--k") o.k = std::stoull(value);
         else if (key == "--fragment-size") o.fragment_size = std::stoull(value);
         else if (key == "--hash-functions") o.hash_functions = std::stoull(value);
@@ -508,6 +565,31 @@ Options parse_options(int argc, char ** argv)
         throw std::runtime_error("--reference-hit-classes requires --repeat annotate");
     if (o.mode != "ibf" && o.mode != "exact" && o.mode != "validate" && o.mode != "calibrate")
         throw std::runtime_error("Invalid --mode");
+    o.legacy_global_budget = !o.explicit_scoring && !o.auto_tune_given && o.mode == "ibf" && !o.fdr_control_per_bin;
+    if (o.explicit_scoring && o.scoring_method != "global_ibf" && o.scoring_method != "per_bin_ibf" &&
+        o.scoring_method != "per_bin_verified" && o.scoring_method != "global_exact")
+        throw std::runtime_error("Invalid --scoring-method");
+    if (o.scoring_method == "per_bin_ibf" || o.scoring_method == "per_bin_verified") {
+        o.fdr_control_per_bin = true;
+        o.per_bin_exact_verify = o.scoring_method == "per_bin_verified";
+    }
+    if (o.scoring_method.empty())
+        o.scoring_method = o.mode != "ibf" ? "global_exact" : o.fdr_control_per_bin ?
+                           (o.per_bin_exact_verify ? "per_bin_verified" : "per_bin_ibf") : "global_ibf";
+    // Validation always evaluates the complete candidate pipeline, even when
+    // global exact remains the explicitly identified primary score.
+    if ((o.mode == "validate" || o.mode == "calibrate") && o.explicit_scoring) {
+        o.fdr_control_per_bin = true; o.per_bin_exact_verify = true;
+    }
+    if ((o.mode == "exact" && o.scoring_method != "global_exact") ||
+        (o.mode == "ibf" && o.scoring_method == "global_exact"))
+        throw std::runtime_error("Scoring method incompatible with mode; global_exact needs exact/validate/calibrate");
+    if (o.ibf_auto_tune != "off" && o.ibf_auto_tune != "recommend" && o.ibf_auto_tune != "apply")
+        throw std::runtime_error("Invalid --ibf-auto-tune (off/recommend/apply)");
+    if (!o.threads || o.threads > 4096 || !o.progress_every_queries ||
+        !std::isfinite(o.progress_interval_seconds) || o.progress_interval_seconds < 0 ||
+        !std::isfinite(o.ibf_max_index_memory_gb) || o.ibf_max_index_memory_gb < 0)
+        throw std::runtime_error("Invalid resource/logging option");
     if (o.mode == "ibf" && (o.local_window || !o.positions.empty() || !o.loci_output.empty() ||
                            !o.expected_loci_bed.empty()))
         throw std::runtime_error("Localization and exact positions require --mode validate, calibrate, or exact");
@@ -527,8 +609,6 @@ Options parse_options(int argc, char ** argv)
         throw std::runtime_error("Index serialization requires an IBF mode");
     if (o.fdr_control_per_bin && o.mode == "exact")
         throw std::runtime_error("--fdr-control-per-bin requires an IBF mode");
-    if (o.fdr_control_per_bin && o.mode == "ibf" && o.per_bin_exact_verify)
-        throw std::runtime_error("--mode ibf with --fdr-control-per-bin requires --no-per-bin-exact-verify; use --mode validate for verified candidates");
     if (!o.fdr_control_per_bin && !o.per_bin_output.empty())
         throw std::runtime_error("--per-bin-output requires --fdr-control-per-bin");
     if (o.local_window_given && o.local_window < o.k)
@@ -538,13 +618,17 @@ Options parse_options(int argc, char ** argv)
     load_thresholds(o);
     o.requested_per_bin_fpr = o.fpr;
     if (o.metrics.empty()) o.metrics = o.output.string() + ".metrics.json";
+    if (o.log_file.empty()) o.log_file = o.output.string() + ".log";
+    if (o.ibf_tuning_report.empty()) o.ibf_tuning_report = o.output.string() + ".ibf_tuning.json";
     if (o.mode == "calibrate" && o.calibration_bins.empty()) o.calibration_bins = o.output.string() + ".bins.tsv";
     if (o.repeat == "annotate" && o.repeat_classes.empty()) o.repeat_classes = o.output.string() + ".repeat_classes.tsv";
     if (!o.expected_loci_bed.empty() && o.expected_loci_output.empty())
         o.expected_loci_output = o.output.string() + ".expected_loci.tsv";
     if (o.fdr_control_per_bin && o.per_bin_output.empty())
         o.per_bin_output = o.output.string() + ".per_bin.tsv";
-    std::vector<fs::path> inputs{o.reference, o.queries}, outputs{o.output, o.metrics};
+    std::vector<fs::path> inputs{o.reference, o.queries}, outputs{o.output, o.metrics, o.log_file,
+        o.log_file.string() + ".jsonl", o.ibf_tuning_report};
+    if (!o.reference_cache.empty()) outputs.push_back(o.reference_cache);
     if (!o.config_path.empty()) inputs.push_back(o.config_path);
     for (auto const & input : {o.reference_repeat_bed, o.query_repeat_bed, o.exon_blocks, o.expected_loci_bed,
                               o.threshold_table,
@@ -627,6 +711,7 @@ void scan_fasta(fs::path const & path, OnStart on_start, OnBase on_base)
     int raw;
     while ((raw = in.get()) != -1)
     {
+        if ((pos & 65535) == 0) fraglncrna::check_stop();
         char c = static_cast<char>(raw);
         if (c == '\n' || c == '\r')
         {
@@ -818,6 +903,7 @@ struct ReferenceInfo
     std::vector<std::size_t> bin_insertions, bin_distinct;
     std::size_t total_bases = 0, valid_windows = 0, bin_count = 0;
     std::size_t bin_bits = 0;
+    std::size_t ambiguous_bases = 0, softmasked_bases = 0;
     uint64_t sequence_hash = 14695981039346656037ULL;
     std::string sequence_sha256;
 };
@@ -930,7 +1016,9 @@ ExpectedLoci load_expected_loci(Options const & o, ReferenceInfo const & info)
     return loci;
 }
 
-ReferenceInfo inspect_reference(Options const & o, RepeatBed const & reference_bed)
+#include "indexed_reference.hpp"
+
+ReferenceInfo inspect_reference(Options const & o, RepeatBed const & reference_bed, IndexedReference * cache = nullptr)
 {
     ReferenceInfo info;
     fraglncrna::Sha256 sha;
@@ -941,6 +1029,7 @@ ReferenceInfo inspect_reference(Options const & o, RepeatBed const & reference_b
     scan_fasta(o.reference,
         [&](std::string const & id)
         {
+            fraglncrna::production_log.progress("reference", "contig=" + id + " bases=" + std::to_string(info.total_bases), true);
             if (!seen_ids.insert(id).second)
                 throw std::runtime_error("Duplicate reference FASTA identifier: " + id);
             if (!info.ids.empty()) sha256_record_end(sha, info.lengths.back());
@@ -959,6 +1048,11 @@ ReferenceInfo inspect_reference(Options const & o, RepeatBed const & reference_b
             sha.update(static_cast<unsigned char>(c));
             ++info.lengths.back();
             ++info.total_bases;
+            info.ambiguous_bases += fraglncrna::dna_code(c) < 0;
+            info.softmasked_bases += c >= 'a' && c <= 'z';
+            if (cache) cache->base(c);
+            if (info.total_bases % 1000000 == 0)
+                fraglncrna::production_log.progress("reference", "bases=" + std::to_string(info.total_bases));
             if (auto w = maker.push(c, bed.at(pos)); w && w->valid) ++info.valid_windows;
         });
     for (std::size_t i = 0; i < info.lengths.size(); ++i)
@@ -976,12 +1070,11 @@ ReferenceInfo inspect_reference(Options const & o, RepeatBed const & reference_b
 
 using Ibf = seqan3::interleaved_bloom_filter<>;
 
+#include "ibf_diagnostics.hpp"
+
 std::unique_ptr<Ibf> build_index(Options const & o, ReferenceInfo & info, RepeatBed const & reference_bed)
 {
-    double n = static_cast<double>(o.fragment_size);
-    double h = static_cast<double>(o.hash_functions);
-    std::size_t bits = std::max<std::size_t>(1024, static_cast<std::size_t>(
-        std::ceil(-h * n / std::log(1.0 - std::pow(o.fpr, 1.0 / h)))));
+    std::size_t bits = planned_bin_bits(o.fragment_size, o.hash_functions, o.fpr);
     info.bin_bits = bits;
     auto ibf = std::make_unique<Ibf>(seqan3::bin_count{std::max<std::size_t>(1, info.bin_count)},
                                      seqan3::bin_size{bits}, seqan3::hash_function_count{o.hash_functions});
@@ -991,7 +1084,8 @@ std::unique_ptr<Ibf> build_index(Options const & o, ReferenceInfo & info, Repeat
     std::size_t active_bin = std::numeric_limits<std::size_t>::max();
     std::unordered_set<uint64_t> distinct;
     scan_fasta(o.reference,
-        [&](std::string const & id) { maker.reset(); bed.reset(id); ++record; },
+        [&](std::string const & id) { maker.reset(); bed.reset(id); ++record;
+            fraglncrna::production_log.progress("index", "contig=" + id, true); },
         [&](std::size_t pos, char c)
         {
             auto w = maker.push(c, bed.at(pos));
@@ -1009,6 +1103,8 @@ std::unique_ptr<Ibf> build_index(Options const & o, ReferenceInfo & info, Repeat
             distinct.insert(key);
             ibf->emplace(key, seqan3::bin_index{bin});
             ++info.bin_insertions[bin];
+            if (pos % 1000000 == 0) fraglncrna::production_log.progress("index",
+                "contig=" + info.ids[record-1] + " bases=" + std::to_string(pos) + " bin=" + std::to_string(bin));
         });
     if (active_bin != std::numeric_limits<std::size_t>::max())
         info.bin_distinct[active_bin] = distinct.size();
@@ -1069,7 +1165,8 @@ void check_index_metadata(IndexMetadata const & stored, IndexMetadata const & ex
 {
     auto require_same = [](auto const & a, auto const & b, char const * field)
     {
-        if (a != b) throw std::runtime_error(std::string("Incompatible index metadata: ") + field);
+        if (a != b) throw std::runtime_error(std::string("Incompatible index metadata: ") + field +
+            "; rebuild with matching settings using --save-index NEW.ibf after removing --load-index");
     };
     require_same(stored.format_version, expected.format_version, "format_version");
     require_same(stored.software_version, expected.software_version, "software_version");
@@ -1109,7 +1206,7 @@ void save_index_file(fs::path const & path, IndexMetadata const & meta, Ibf cons
     { cereal::BinaryOutputArchive archive(header_stream); archive(meta); }
     std::string header = header_stream.str();
     if (header.size() > 64 * 1024 * 1024) throw std::runtime_error("Index metadata exceeds 64 MiB");
-    fs::path temporary = path.string() + ".partial." + std::to_string(getpid());
+    fs::path temporary = unique_staging_path(path);
     try
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
@@ -1145,7 +1242,7 @@ void save_index_file(fs::path const & path, IndexMetadata const & meta, Ibf cons
 }
 
 std::unique_ptr<Ibf> load_index_file(fs::path const & path, IndexMetadata const & expected,
-                                     ReferenceInfo & info)
+                                     ReferenceInfo & info, double max_index_memory_gb)
 {
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open index " + path.string());
@@ -1175,6 +1272,9 @@ std::unique_ptr<Ibf> load_index_file(fs::path const & path, IndexMetadata const 
     IndexMetadata stored;
     { cereal::BinaryInputArchive archive(header_input); archive(stored); }
     check_index_metadata(stored, expected);
+    auto stored_bytes = planned_index_bytes(stored.bin_count,stored.bin_bits);
+    if (max_index_memory_gb > 0 && double(stored_bytes) > max_index_memory_gb*1e9)
+        throw std::runtime_error("Loaded archive layout exceeds --ibf-max-index-memory-gb; use a larger budget or explicitly rebuild a smaller index");
     auto ibf = std::make_unique<Ibf>();
     { cereal::BinaryInputArchive archive(input); archive(*ibf); }
     if (!input || ibf->bin_count() != std::max<std::size_t>(1, info.bin_count) ||
@@ -1187,7 +1287,7 @@ std::unique_ptr<Ibf> load_index_file(fs::path const & path, IndexMetadata const 
 }
 
 void write_index_metadata_json(fs::path const & index_path, IndexMetadata const & meta,
-                               std::string const & index_sha, std::size_t disk_bytes)
+                               std::string const & index_sha, std::size_t disk_bytes, Options const & options)
 {
     fs::path path = index_path.string() + ".metadata.json";
     std::ofstream out(path);
@@ -1216,6 +1316,10 @@ void write_index_metadata_json(fs::path const & index_path, IndexMetadata const 
         << std::accumulate(meta.bin_distinct.begin(), meta.bin_distinct.end(), std::size_t{0})
         << ",\n  \"disk_index_bytes\": " << disk_bytes
         << ",\n  \"index_file_sha256\": " << json_string(index_sha)
+        << ",\n  \"requested_per_bin_fpr\": " << options.requested_per_bin_fpr
+        << ",\n  \"ibf_auto_tune\": " << json_string(options.ibf_auto_tune)
+        << ",\n  \"tuning_report\": " << json_string(options.ibf_tuning_report.string())
+        << ",\n  \"tuning_report_sha256\": " << json_string(sha256_file(options.ibf_tuning_report))
         << ",\n  \"contigs\": [";
     for (std::size_t i = 0; i < meta.contig_ids.size(); ++i)
     {
@@ -1249,6 +1353,8 @@ struct Query
     std::vector<PerBinCandidate> per_bin_candidates;
     std::vector<PerBinRegion> per_bin_regions;
     std::size_t max_bin_hits = 0, candidate_bins_before_top_k = 0;
+    std::vector<unsigned char> candidate_support;
+    std::size_t rejected_min_hits = 0, rejected_fraction = 0;
 };
 
 struct Hit
@@ -1265,6 +1371,10 @@ struct ExactResult
     std::unordered_map<uint64_t, std::vector<std::size_t>> exact_bins;
     std::vector<std::vector<std::size_t>> per_bin_region_exact_windows;
     std::vector<std::size_t> per_bin_candidate_union_windows;
+    std::vector<std::vector<uint64_t>> candidate_window_masks;
+    std::size_t candidate_reference_bases = 0, candidate_interval_reads = 0;
+    std::size_t whole_reference_bases = 0;
+    std::size_t candidate_cache_hits = 0, candidate_cache_insertions = 0;
 };
 
 class PositionWriter
@@ -1360,6 +1470,10 @@ Query make_query(std::string id, std::size_t index, std::string const & sequence
     q.windows.reserve(sequence.size() >= o.k ? sequence.size() - o.k + 1 : 0);
     for (std::size_t pos = 0; pos < sequence.size(); ++pos)
     {
+        if (pos % 1048576 == 0) {
+            fraglncrna::check_stop();
+            fraglncrna::production_log.progress("query","query=" + q.id + " bases=" + std::to_string(pos));
+        }
         auto w = maker.push(sequence[pos], bed.at(pos));
         if (!w) continue;
         ++q.total_windows;
@@ -1385,21 +1499,27 @@ Query make_query(std::string id, std::size_t index, std::string const & sequence
     return q;
 }
 
-void prepare_per_bin_query(Query & q, Options const & o, ReferenceInfo const & info)
+void prepare_per_bin_query(Query & q, Options const & o, ReferenceInfo const & info, Ibf const * ibf)
 {
     if (!o.fdr_control_per_bin) return;
     for (auto const & [bin, hits] : q.per_bin_counts)
     {
+        if (o.log_per_bin) fraglncrna::production_log.event("candidate","stage_progress",
+            "query=" + q.id + " bin=" + std::to_string(bin) + " hits=" + std::to_string(hits) +
+            " valid_windows=" + std::to_string(q.valid_windows) + " thresholds=" +
+            std::to_string(o.per_bin_min_hits) + "," + std::to_string(o.per_bin_min_fraction));
         q.max_bin_hits = std::max(q.max_bin_hits, hits);
-        if (hits < o.per_bin_min_hits ||
-            static_cast<double>(hits) < o.per_bin_min_fraction * q.valid_windows) continue;
+        if (hits < o.per_bin_min_hits) { ++q.rejected_min_hits; continue; }
+        if (static_cast<double>(hits) < o.per_bin_min_fraction * q.valid_windows) { ++q.rejected_fraction; continue; }
         std::size_t contig = static_cast<std::size_t>(
             std::upper_bound(info.bin_offsets.begin(), info.bin_offsets.end(), bin) - info.bin_offsets.begin() - 1);
         std::size_t start = (bin - info.bin_offsets[contig]) * o.fragment_size;
         q.per_bin_candidates.push_back({bin, contig, start,
                                         std::min(start + o.fragment_size, info.lengths[contig]), hits});
     }
-    decltype(q.per_bin_counts){}.swap(q.per_bin_counts);
+    // Validation keeps sparse H_b totals for empirical per-bin errors; it
+    // does not retain every positive query-window/bin pair.
+    if (o.mode != "validate") decltype(q.per_bin_counts){}.swap(q.per_bin_counts);
     std::sort(q.per_bin_candidates.begin(), q.per_bin_candidates.end(),
         [](auto const & a, auto const & b)
         {
@@ -1442,130 +1562,110 @@ void prepare_per_bin_query(Query & q, Options const & o, ReferenceInfo const & i
             if (a.sum_hits != b.sum_hits) return a.sum_hits > b.sum_hits;
             return std::tie(a.contig, a.start, a.end) < std::tie(b.contig, b.start, b.end);
         });
+    // Union of original query-window support across selected bins; never sum
+    // per-bin memberships into a recovery fraction. This bounded second probe
+    // avoids retaining a query-window x reference-bin matrix.
+    q.candidate_support.resize(q.windows.size());
+    if (ibf && !q.per_bin_candidates.empty()) {
+        auto agent = ibf->membership_agent();
+        std::vector<std::size_t> selected;
+        for (auto const & candidate : q.per_bin_candidates) selected.push_back(candidate.bin);
+        std::sort(selected.begin(), selected.end());
+        std::unordered_map<uint64_t, bool> memo;
+        for (std::size_t wi = 0; wi < q.windows.size(); ++wi) {
+            auto const & w = q.windows[wi]; if (!w.valid) continue;
+            uint64_t key = index_key(w,o);
+            auto [it, inserted] = memo.try_emplace(key, false);
+            if (inserted) {
+                auto const & forward = agent.bulk_contains(key);
+                for (auto bin : selected) if (forward[bin]) { it->second = true; break; }
+                if (!it->second && o.strand == "both" && w.forward != w.reverse) {
+                    auto const & reverse = agent.bulk_contains(w.reverse);
+                    for (auto bin : selected) if (reverse[bin]) { it->second = true; break; }
+                }
+            }
+            q.candidate_support[wi] = it->second;
+        }
+    }
 }
 
 ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed const & reference_bed,
                         std::vector<Query> const & batch)
 {
+    // Independent full-reference truth. Candidate membership never enters
+    // the sought-key set, reference scan, or returned found keys.
     std::unordered_set<uint64_t> sought;
     bool collect_hits = o.local_window || !o.positions.empty() || !o.reference_hit_classes.empty() ||
-                        !o.exon_blocks.empty() ||
-                        !o.loci_output.empty() || !o.expected_loci_bed.empty();
-    bool verify_regions = o.fdr_control_per_bin && o.per_bin_exact_verify;
+                        !o.exon_blocks.empty() || !o.loci_output.empty() || !o.expected_loci_bed.empty();
     std::unordered_map<uint64_t, std::vector<std::pair<std::size_t, std::size_t>>> owners;
     ExactResult result;
     if (collect_hits) result.hits.resize(batch.size());
-    std::vector<std::vector<std::vector<uint64_t>>> region_masks;
-    if (verify_regions)
-    {
-        constexpr std::size_t max_mask_words = (256ULL * 1024 * 1024) / sizeof(uint64_t);
-        std::size_t mask_words = 0;
-        for (auto const & query : batch)
-        {
-            std::size_t words_per_region = (query.windows.size() + 63) / 64;
-            if (words_per_region && query.per_bin_regions.size() >
-                                    (max_mask_words - mask_words) / words_per_region)
-                throw std::runtime_error("Per-bin exact region masks exceed 256 MiB per batch; "
-                                         "reduce --batch-windows or --per-bin-top-k");
-            mask_words += words_per_region * query.per_bin_regions.size();
-        }
-        region_masks.resize(batch.size());
-        for (std::size_t qi = 0; qi < batch.size(); ++qi)
-            for (std::size_t ignored = 0; ignored < batch[qi].per_bin_regions.size(); ++ignored)
-                region_masks[qi].emplace_back((batch[qi].windows.size() + 63) / 64, 0);
-    }
     for (std::size_t qi = 0; qi < batch.size(); ++qi)
-        for (std::size_t wi = 0; wi < batch[qi].windows.size(); ++wi)
-        {
+        for (std::size_t wi = 0; wi < batch[qi].windows.size(); ++wi) {
             auto const & w = batch[qi].windows[wi];
-            if (w.valid)
-            {
-                sought.insert(w.forward);
-                if (o.strand != "forward") sought.insert(w.reverse);
-                if (collect_hits || verify_regions)
-                {
-                    owners[w.forward].emplace_back(qi, wi);
-                    if (o.strand != "forward" && w.reverse != w.forward)
-                        owners[w.reverse].emplace_back(qi, wi);
-                }
+            if (!w.valid) continue;
+            sought.insert(w.forward);
+            if (o.strand != "forward") sought.insert(w.reverse);
+            if (collect_hits) {
+                owners[w.forward].emplace_back(qi, wi);
+                if (o.strand != "forward" && w.reverse != w.forward)
+                    owners[w.reverse].emplace_back(qi, wi);
             }
         }
-    if (sought.empty())
-    {
-        if (verify_regions)
-        {
-            result.per_bin_region_exact_windows.resize(batch.size());
-            result.per_bin_candidate_union_windows.resize(batch.size());
-        }
-        return result;
-    }
+    if (sought.empty()) return result;
     WindowMaker maker{o, o.repeat == "exclude" && o.mask_target != "query"};
     BedCursor bed{reference_bed};
     std::size_t contig = 0, hit_rows = 0, calibration_pairs = 0;
     scan_fasta(o.reference,
-        [&](std::string const & id) { maker.reset(); bed.reset(id); ++contig; },
-        [&](std::size_t pos, char c)
-        {
+        [&](std::string const & id) {
+            maker.reset(); bed.reset(id); ++contig;
+            fraglncrna::production_log.progress("global-exact", "contig=" + id, true);
+        },
+        [&](std::size_t pos, char c) {
+            ++result.whole_reference_bases;
+            if (pos % 1000000 == 0) fraglncrna::production_log.progress("global-exact",
+                "contig=" + info.ids[contig-1] + " bases=" + std::to_string(pos));
             auto w = maker.push(c, bed.at(pos));
             if (!w || !w->valid || !sought.contains(w->forward)) return;
             result.found.insert(w->forward);
-            if (o.mode == "calibrate")
-            {
+            if (o.mode == "calibrate" || (o.mode == "validate" && o.fdr_control_per_bin)) {
                 std::size_t bin = info.bin_offsets[contig - 1] + (pos + 1 - o.k) / o.fragment_size;
                 auto & bins = result.exact_bins[w->forward];
-                if (bins.empty() || bins.back() != bin)
-                {
+                if (bins.empty() || bins.back() != bin) {
                     bins.push_back(bin);
                     if (++calibration_pairs > o.max_calibration_pairs)
                         throw std::runtime_error("Exact bin pairs exceed --max-calibration-pairs for one batch; "
                                                  "reduce --batch-windows or raise the explicit cap");
                 }
             }
-            if (!collect_hits && !verify_regions) return;
-            auto it = owners.find(w->forward);
-            if (it == owners.end()) return;
-            for (auto const & [qi, wi] : it->second)
-            {
-                if (verify_regions)
-                    for (std::size_t ri = 0; ri < batch[qi].per_bin_regions.size(); ++ri)
-                    {
-                        auto const & region = batch[qi].per_bin_regions[ri];
-                        std::size_t start = pos + 1 - o.k;
-                        if (region.contig == contig - 1 && start >= region.start && start < region.end)
-                            region_masks[qi][ri][wi / 64] |= uint64_t{1} << (wi % 64);
-                    }
-                if (!collect_hits) continue;
+            if (!collect_hits) return;
+            for (auto const & [qi, wi] : owners.at(w->forward)) {
                 auto const & query_window = batch[qi].windows[wi];
                 char strand = query_window.forward == query_window.reverse ? '.' :
                               query_window.forward == w->forward ? '+' : '-';
-                result.hits[qi].push_back(Hit{wi, contig - 1, pos + 1 - o.k, strand, w->repeat_class});
+                result.hits[qi].push_back(Hit{wi, contig-1, pos+1-o.k, strand, w->repeat_class});
                 if (++hit_rows > o.max_position_rows)
                     throw std::runtime_error("Exact occurrence count exceeds --max-position-rows for one batch; "
                                              "reduce --batch-windows or raise the explicit cap");
             }
         });
-    if (verify_regions)
-    {
-        result.per_bin_region_exact_windows.resize(batch.size());
-        result.per_bin_candidate_union_windows.resize(batch.size());
-        for (std::size_t qi = 0; qi < batch.size(); ++qi)
-        {
-            std::vector<uint64_t> union_mask((batch[qi].windows.size() + 63) / 64, 0);
-            for (auto const & mask : region_masks[qi])
-            {
-                std::size_t count = 0;
-                for (std::size_t word = 0; word < mask.size(); ++word)
-                {
-                    count += std::popcount(mask[word]);
-                    union_mask[word] |= mask[word];
-                }
-                result.per_bin_region_exact_windows[qi].push_back(count);
-            }
-            for (uint64_t word : union_mask)
-                result.per_bin_candidate_union_windows[qi] += std::popcount(word);
-        }
-    }
     return result;
+}
+
+#include "candidate_verifier.hpp"
+
+bool schema3(Options const & o) { return o.explicit_scoring || (o.mode == "ibf" && o.fdr_control_per_bin); }
+
+std::string classify(std::size_t matched, std::size_t valid, Options const & o) {
+    if (!valid) return "NO_VALID_KMERS";
+    if (!matched) return "NO_MATCH";
+    double fraction = double(matched) / valid;
+    return fraction >= o.strict ? "PASS_STRICT" : fraction >= o.basic ? "PASS_BASIC" : "LOW_SUPPORT";
+}
+
+bool candidate_match(ExactResult const & result, std::size_t qi, std::size_t wi) {
+    return !result.candidate_window_masks.empty() &&
+           ((result.candidate_window_masks[qi][wi/64] >> (wi%64)) & 1);
 }
 
 bool exact_match(Window const & w, Options const & o, std::unordered_set<uint64_t> const & found)
@@ -1581,6 +1681,12 @@ void write_fraction(std::ostream & out, std::size_t numerator, std::size_t denom
     else out << "NA";
 }
 
+void write_real(std::ostream & out, double value) {
+    auto flags = out.flags(); auto precision = out.precision();
+    out << std::defaultfloat << std::setprecision(17) << value;
+    out.flags(flags); out.precision(precision);
+}
+
 struct Totals
 {
     std::size_t queries = 0, valid = 0, absent = 0, exact_positive = 0, fp = 0, fn = 0, matched = 0;
@@ -1592,6 +1698,13 @@ struct Totals
     std::size_t per_bin_rejected_regions = 0, per_bin_missed_exact_queries = 0;
     std::size_t per_bin_exact_windows_outside_candidates = 0, per_bin_top_k_dropped = 0;
     double query_seconds = 0, exact_seconds = 0, result_seconds = 0;
+    double candidate_selection_seconds = 0, candidate_verification_seconds = 0;
+    double per_bin_comparison_seconds = 0;
+    std::size_t candidate_reference_bases = 0, candidate_interval_reads = 0, global_reference_scans = 0, batches = 0;
+    std::size_t whole_reference_bases_visited = 0;
+    std::size_t candidate_cache_hits = 0, candidate_cache_insertions = 0;
+    std::size_t candidate_false_negative_windows = 0;
+    std::map<std::string,std::size_t> status_counts;
 };
 
 std::vector<std::size_t> exact_bins_for_window(Window const & w, Options const & o,
@@ -1608,6 +1721,36 @@ std::vector<std::size_t> exact_bins_for_window(Window const & w, Options const &
     std::sort(bins.begin(), bins.end());
     bins.erase(std::unique(bins.begin(), bins.end()), bins.end());
     return bins;
+}
+
+void compare_validation_bins(Options const & o, std::vector<Query> const & batch,
+                             ExactResult const & exact, Ibf const & ibf, Totals & totals) {
+    // H_b = TP_b + FP_b. Independent exact bin ownership gives true pairs;
+    // probe only those pairs to measure FN_b. This avoids a dense matrix or
+    // retaining all positive membership pairs during validation.
+    for (auto const & q : batch) {
+        for (auto const & [bin,hits] : q.per_bin_counts) totals.bin_fp[bin] += hits;
+        auto agent = ibf.membership_agent();
+        for (auto const & window : q.windows) {
+            if (!window.valid) continue;
+            auto bins = exact_bins_for_window(window,o,exact);
+            if (bins.empty()) continue;
+            std::vector<unsigned char> positive(bins.size());
+            auto const & first = agent.bulk_contains(index_key(window,o));
+            for (std::size_t i = 0; i < bins.size(); ++i) positive[i] = first[bins[i]];
+            if (o.strand == "both" && window.forward != window.reverse) {
+                auto const & second = agent.bulk_contains(window.reverse);
+                for (std::size_t i = 0; i < bins.size(); ++i) positive[i] |= second[bins[i]];
+            }
+            for (std::size_t i = 0; i < bins.size(); ++i) {
+                auto bin = bins[i]; ++totals.bin_exact_present[bin];
+                if (positive[i]) {
+                    if (!totals.bin_fp[bin]) throw std::runtime_error("Inconsistent per-bin membership accounting");
+                    --totals.bin_fp[bin];
+                } else ++totals.bin_fn[bin];
+            }
+        }
+    }
 }
 
 struct LocalStats
@@ -1778,6 +1921,8 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
         std::size_t repeat_match = 0, nonrepeat_valid = 0, nonrepeat_match = 0;
         std::map<uint32_t, std::pair<std::size_t, std::size_t>> class_counts;
         std::unordered_set<uint64_t> distinct, distinct_match;
+        std::size_t matched = 0, candidate_count = 0, verified_count = 0, candidate_fp = 0, candidate_fn = 0;
+        std::size_t candidate_ibf_fp = 0, candidate_ibf_fn = 0;
         for (std::size_t i = 0; i < q.windows.size(); ++i)
         {
             auto const & w = q.windows[i];
@@ -1800,11 +1945,22 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
             bool exact = o.mode != "ibf" && exact_match(w, o, exact_result.found);
             if (ibf) ++ibf_match;
             if (exact) ++exact_count;
-            if (o.mode == "ibf" ? ibf : exact) distinct_match.insert(key);
+            bool candidate = !q.candidate_support.empty() && q.candidate_support[i];
+            bool local = candidate_match(exact_result, qi, i);
+            candidate_count += candidate; verified_count += local;
+            if (o.mode != "ibf" && o.fdr_control_per_bin) {
+                candidate_ibf_fp += candidate && !exact; candidate_ibf_fn += exact && !candidate;
+            }
+            if (o.mode != "ibf" && o.fdr_control_per_bin && o.per_bin_exact_verify) {
+                candidate_fp += local && !exact; candidate_fn += exact && !local;
+            }
+            bool selected_match = o.scoring_method == "global_ibf" ? ibf :
+                                  o.scoring_method == "per_bin_ibf" ? candidate :
+                                  o.scoring_method == "per_bin_verified" ? local : exact;
+            if (selected_match) { distinct_match.insert(key); ++matched; }
             if (o.mode != "ibf" && ibf && !exact) ++fp;
             if (o.mode != "ibf" && !ibf && exact && o.mode != "exact") ++fn;
             bin_hits += q.bin_hits[i];
-            bool selected_match = o.mode == "ibf" ? ibf : exact;
             if (repeat_class_out && w.repeat_class)
             {
                 auto & counts = class_counts[w.repeat_class];
@@ -1814,26 +1970,19 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
             if (!w.repeat) { ++nonrepeat_valid; if (selected_match) ++nonrepeat_match; }
             else if (selected_match) ++repeat_match;
         }
-        std::size_t matched = o.mode == "ibf" ? ibf_match : exact_count;
-        std::string status = q.valid_windows == 0 ? "NO_VALID_KMERS" :
-                             matched == 0 ? "NO_MATCH" :
-                             static_cast<double>(matched) / q.valid_windows >= o.strict ? "PASS_STRICT" :
-                             static_cast<double>(matched) / q.valid_windows >= o.basic ? "PASS_BASIC" : "LOW_SUPPORT";
-        std::string union_status = q.valid_windows == 0 ? "NO_VALID_KMERS" :
-                                   ibf_match == 0 ? "NO_MATCH" :
-                                   static_cast<double>(ibf_match) / q.valid_windows >= o.strict ? "PASS_STRICT" :
-                                   static_cast<double>(ibf_match) / q.valid_windows >= o.basic ? "PASS_BASIC" :
-                                   "LOW_SUPPORT";
-        out << "2\t" << q.index << '\t' << q.id << '\t' << ref_id << '\t' << o.k << '\t'
+        std::string status = classify(matched,q.valid_windows,o);
+        std::string union_status = classify(ibf_match,q.valid_windows,o);
+        out << (schema3(o) ? "3\t" : "2\t") << q.index << '\t' << q.id << '\t' << ref_id << '\t' << o.k << '\t'
             << q.total_windows << '\t' << q.valid_windows << '\t'
             << q.total_windows - q.valid_windows << '\t' << matched << '\t'
             << q.valid_windows - matched << '\t' << distinct.size() << '\t'
             << distinct_match.size() << '\t' << bin_hits << '\t';
         write_fraction(out, matched, q.valid_windows);
         out << '\t' << status << '\t' << o.strand << '\t' << o.repeat << '\t' << o.ambiguity
-            << '\t' << o.mode << '\t' << o.fragment_size << '\t' << o.hash_functions << '\t'
-            << std::fixed << std::setprecision(o.fpr < 0.000001 ? 12 : 6) << o.fpr << '\t'
-            << std::setprecision(6) << o.basic << '\t' << o.strict
+            << '\t' << o.mode << '\t' << o.fragment_size << '\t' << o.hash_functions << '\t';
+        if (o.fpr < 1e-12) write_real(out,o.fpr);
+        else out << std::fixed << std::setprecision(o.fpr < 0.000001 ? 12 : 6) << o.fpr;
+        out << '\t' << std::fixed << std::setprecision(6) << o.basic << '\t' << o.strict
             << '\t' << o.threshold_source << '\t'
             << (o.training_control_set.empty() ? "NA" : o.training_control_set) << '\t'
             << (o.evaluation_control_set.empty() ? "NA" : o.evaluation_control_set) << '\t';
@@ -1984,6 +2133,50 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
             }
         }
         else out << "\tNA\tNA\tNA\tNA\tNA";
+        if (schema3(o)) {
+            bool verification = o.fdr_control_per_bin && o.per_bin_exact_verify;
+            std::size_t verified_loci = 0;
+            if (verification) for (auto count : exact_result.per_bin_region_exact_windows[qi]) verified_loci += count > 0;
+            out << '\t' << o.scoring_method << '\t'
+                << (o.scoring_method == "global_exact" ? "exact" : o.scoring_method == "per_bin_verified" ? "candidate_exact" :
+                    o.scoring_method == "per_bin_ibf" ? "ibf_candidates" : "ibf") << '\t';
+            if (o.mode != "exact") write_fraction(out,ibf_match,q.valid_windows); else out << "NA";
+            out << '\t';
+            if (o.fdr_control_per_bin) out << q.per_bin_regions.size() << '\t' << candidate_count;
+            else out << "NA\tNA";
+            out << '\t';
+            if (o.fdr_control_per_bin) write_fraction(out,candidate_count,q.valid_windows); else out << "NA";
+            out << '\t';
+            if (verification) { write_fraction(out,verified_count,q.valid_windows); out << '\t' << verified_loci; }
+            else out << "NA\tNA";
+            out << '\t';
+            if (o.mode != "ibf") write_fraction(out,exact_count,q.valid_windows); else out << "NA";
+            out << '\t' << (o.scoring_method == "global_exact" ? "whole_reference" :
+                             o.scoring_method == "per_bin_verified" ? "candidate_intervals" : "none")
+                << '\t' << (o.scoring_method == "global_ibf" || o.scoring_method == "per_bin_ibf" ? "approximate" : "exact_membership") << '\t';
+            if (o.mode != "exact") write_real(out,o.fpr); else out << "NA";
+            out << '\t';
+            if (o.mode != "exact" && (o.legacy_global_budget || o.genome_fpr_given ||
+                (o.scoring_method == "global_ibf" && o.ibf_auto_tune == "apply"))) write_real(out,o.genome_fpr); else out << "NA";
+            out << '\t' << (o.mode != "ibf" ? classify(exact_count,q.valid_windows,o) : "NA")
+                << '\t' << (o.mode != "exact" ? classify(ibf_match,q.valid_windows,o) : "NA")
+                << '\t' << (o.fdr_control_per_bin ? classify(candidate_count,q.valid_windows,o) : "NA")
+                << '\t' << (verification ? classify(verified_count,q.valid_windows,o) : "NA") << '\t';
+            if (verification && o.mode != "ibf") {
+                write_fraction(out,verified_count,exact_count);
+                out << '\t' << candidate_fp << '\t' << candidate_fn << '\t';
+                if (q.valid_windows) out << std::setprecision(6) << (double(verified_count)-exact_count)/q.valid_windows;
+                else out << "NA";
+            } else out << "NA\tNA\tNA\tNA";
+            if (o.fdr_control_per_bin) out << '\t' << q.rejected_min_hits << '\t' << q.rejected_fraction;
+            else out << "\tNA\tNA";
+            if (o.mode != "ibf" && o.fdr_control_per_bin) out << '\t' << candidate_ibf_fp << '\t' << candidate_ibf_fn;
+            else out << "\tNA\tNA";
+        }
+        if (o.log_per_query || o.log_level == "debug" || o.log_level == "trace")
+            fraglncrna::production_log.event("scoring","stage_progress","query=" + q.id +
+                " method=" + o.scoring_method + " valid=" + std::to_string(q.valid_windows) +
+                " matched=" + std::to_string(matched) + " status=" + status, o.log_per_query ? 2 : 1);
         out << '\n';
         if (per_bin_out)
         {
@@ -1993,7 +2186,7 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
                                       exact_result.per_bin_candidate_union_windows[qi] : 0;
             auto const * region_counts = verified && !exact_result.per_bin_region_exact_windows.empty() ?
                                          &exact_result.per_bin_region_exact_windows[qi] : nullptr;
-            if (verified && (region_counts == nullptr || union_exact > exact_count))
+            if (verified && (region_counts == nullptr || (o.mode != "ibf" && union_exact > exact_count)))
                 throw std::runtime_error("Inconsistent per-bin exact verification result");
             for (std::size_t ri = 0; ri < q.per_bin_regions.size(); ++ri)
             {
@@ -2013,8 +2206,17 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
                                 *per_bin_candidates_out << '\t';
                                 write_fraction(*per_bin_candidates_out, local, exact_count); }
                 else *per_bin_candidates_out << "NA\tNA\tNA";
-                *per_bin_candidates_out << '\t' << (verified ? (local ? "VERIFIED" : "REJECTED") : "UNVERIFIED")
-                                        << '\n';
+                *per_bin_candidates_out << '\t' << (verified ? (local ? "VERIFIED" : "REJECTED") : "UNVERIFIED");
+                if (schema3(o)) {
+                    *per_bin_candidates_out << '\t';
+                    bool first_bin = true;
+                    for (auto const & bin : q.per_bin_candidates)
+                        if (bin.contig == region.contig && bin.start >= region.start && bin.end <= region.end) {
+                            if (!first_bin) *per_bin_candidates_out << ',';
+                            *per_bin_candidates_out << bin.bin; first_bin = false;
+                        }
+                }
+                *per_bin_candidates_out << '\n';
             }
             std::string per_bin_status = !q.valid_windows ? "NO_VALID_KMERS" :
                                          q.per_bin_regions.empty() ? "NO_CANDIDATE" :
@@ -2022,7 +2224,7 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
                                          best ? "VERIFIED_CANDIDATE" : "CANDIDATE_REJECTED";
             *per_bin_out << "2\t" << q.index << '\t' << q.id << '\t' << ref_id << '\t' << o.k
                          << '\t' << q.valid_windows << '\t';
-            if (verified) { *per_bin_out << exact_count << '\t'; write_fraction(*per_bin_out, exact_count, q.valid_windows); }
+            if (o.mode != "ibf") { *per_bin_out << exact_count << '\t'; write_fraction(*per_bin_out, exact_count, q.valid_windows); }
             else *per_bin_out << "NA\tNA";
             *per_bin_out << '\t' << ibf_match << '\t'; write_fraction(*per_bin_out, ibf_match, q.valid_windows);
             *per_bin_out << '\t' << q.max_bin_hits << '\t';
@@ -2034,22 +2236,24 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
             {
                 *per_bin_out << best << '\t'; write_fraction(*per_bin_out, best, q.valid_windows);
                 *per_bin_out << '\t'; write_fraction(*per_bin_out, best, exact_count);
-                *per_bin_out << '\t' << union_exact << '\t' << exact_count - union_exact << '\t'
-                             << verified_regions << '\t' << rejected;
+                *per_bin_out << '\t' << union_exact << '\t';
+                if (o.mode != "ibf") *per_bin_out << exact_count - union_exact; else *per_bin_out << "NA";
+                *per_bin_out << '\t' << verified_regions << '\t' << rejected;
             }
             else *per_bin_out << "NA\tNA\tNA\tNA\tNA\tNA\tNA";
             *per_bin_out << '\t' << union_status << '\t' << per_bin_status << '\t'
-                         << (verified ? status : "NA") << '\n';
+                         << (o.mode != "ibf" ? classify(exact_count,q.valid_windows,o) : "NA") << '\n';
             totals.per_bin_queries_with_candidates += !q.per_bin_regions.empty();
             totals.per_bin_candidate_bins += q.per_bin_candidates.size();
             totals.per_bin_candidate_regions += q.per_bin_regions.size();
             totals.per_bin_verified_regions += verified_regions;
             totals.per_bin_rejected_regions += rejected;
             totals.per_bin_top_k_dropped += q.candidate_bins_before_top_k - q.per_bin_candidates.size();
-            if (verified)
+            if (verified && o.mode != "ibf")
             {
                 totals.per_bin_exact_windows_outside_candidates += exact_count - union_exact;
                 totals.per_bin_missed_exact_queries += exact_count > 0 && best == 0;
+                totals.candidate_false_negative_windows += candidate_fn;
             }
         }
         if (repeat_class_out)
@@ -2071,6 +2275,7 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
         if (fn) std::cerr << "Diagnostic: " << q.id << " has " << fn
                           << " exact-positive/IBF-negative windows; check preprocessing, strand policy and index version.\n";
         ++totals.queries;
+        ++totals.status_counts[status];
         totals.valid += q.valid_windows;
         totals.matched += matched;
         totals.fp += fp;
@@ -2123,12 +2328,22 @@ void write_fragments(fs::path const & path, Options const & o, ReferenceInfo con
 double observed_ibf_union_estimate(Ibf const & ibf, ReferenceInfo const & info, Options const & o)
 {
     std::size_t technical_bins = ibf.raw_data().size() / info.bin_bits;
+    std::vector<std::size_t> occupied_per_bin(info.bin_count,0);
+    auto const * words = ibf.raw_data().data();
+    std::size_t blocks = technical_bins/64;
+    for (std::size_t bit = 0; bit < info.bin_bits; ++bit)
+        for (std::size_t block = 0; block < blocks; ++block) {
+            uint64_t word = words[bit*blocks+block];
+            while (word) {
+                auto bin = block*64+std::countr_zero(word);
+                if (bin < info.bin_count) ++occupied_per_bin[bin];
+                word &= word-1;
+            }
+        }
     double estimate = 0;
     for (std::size_t bin = 0; bin < info.bin_count; ++bin)
     {
-        std::size_t occupied = 0;
-        for (std::size_t bit = 0; bit < info.bin_bits; ++bit)
-            occupied += ibf.raw_data()[bit * technical_bins + bin];
+        std::size_t occupied = occupied_per_bin[bin];
         estimate += std::pow(static_cast<double>(occupied) / info.bin_bits,
                              static_cast<double>(o.hash_functions));
     }
@@ -2138,6 +2353,36 @@ double observed_ibf_union_estimate(Ibf const & ibf, ReferenceInfo const & info, 
 int run(Options o)
 {
     auto run_start = Clock::now();
+    using fraglncrna::production_log;
+    production_log.open(o.log_file,o.log_level,o.log_to_console,o.progress_interval_seconds);
+    std::signal(SIGTERM,fraglncrna::request_stop);
+    std::signal(SIGINT,fraglncrna::request_stop);
+    o.actual_threads = std::min<std::size_t>(o.threads,fraglncrna::available_workers());
+#ifdef _OPENMP
+    omp_set_dynamic(0);
+    int observed_threads = 1;
+#pragma omp parallel num_threads(o.actual_threads)
+    {
+#pragma omp single
+        observed_threads = omp_get_num_threads();
+    }
+    o.actual_threads = observed_threads;
+#else
+    o.actual_threads = 1;
+    if (o.threads > 1) production_log.event("startup","warning","OpenMP unavailable; using serial fallback",3);
+#endif
+    production_log.event("startup","stage_started","FragIncRNA v2 mode=" + o.mode + " scoring=" + o.scoring_method +
+        " requested_threads=" + std::to_string(o.threads) + " actual_threads=" + std::to_string(o.actual_threads) +
+        " compiler=" + __VERSION__ + " git=" + FRAGLNCRNA_GIT_SHA + " config_sha256=" + sha256_file(o.config_path));
+    production_log.event("startup","stage_completed","reference=" + o.reference.string() + " queries=" + o.queries.string() +
+        " output=" + o.output.string() + " available_cpus=" + std::to_string(fraglncrna::available_workers()) +
+        " physical_memory_bytes=" + std::to_string(double(sysconf(_SC_PHYS_PAGES))*sysconf(_SC_PAGESIZE)) +
+        " OMP_NUM_THREADS=" + (std::getenv("OMP_NUM_THREADS") ? std::getenv("OMP_NUM_THREADS") : "unset"));
+    production_log.event("reference","stage_started","inspect original FASTA and validate provenance");
+    for (auto const & path : {o.reference,o.queries}) {
+        std::ifstream readable(path,std::ios::binary);
+        if (!readable) throw std::runtime_error("Cannot open input FASTA " + path.string());
+    }
     auto reference_start = Clock::now();
     std::string reference_bed_sha = sha256_file(o.reference_repeat_bed);
     std::string query_bed_sha = sha256_file(o.query_repeat_bed);
@@ -2147,16 +2392,24 @@ int run(Options o)
     std::string config_sha = sha256_file(o.config_path);
     RepeatBed reference_bed = load_repeat_bed(o.reference_repeat_bed, o.max_repeat_intervals);
     RepeatBed query_bed = load_repeat_bed(o.query_repeat_bed, o.max_repeat_intervals);
-    ReferenceInfo info = inspect_reference(o, reference_bed);
-    if ((o.mode == "ibf" && !o.fdr_control_per_bin) || o.genome_fpr_given)
-        o.fpr = std::min(o.fpr, o.genome_fpr / std::max<std::size_t>(1, info.bin_count));
-    double nominal_any_bin_fpr = -std::expm1(static_cast<double>(info.bin_count) * std::log1p(-o.fpr));
-    if (o.mode != "exact" && nominal_any_bin_fpr > 0.1)
-        std::cerr << "Warning: nominal any-bin false-positive probability is " << nominal_any_bin_fpr
-                  << " across " << info.bin_count << " bins. IBF-only recovery can be unreliable; "
-                     "use exact-verified results for classification.\n";
+    std::unique_ptr<IndexedReference> reference_access;
+    if (o.fdr_control_per_bin && o.per_bin_exact_verify && !o.ibf_dry_run) {
+        production_log.event("reference-cache","stage_started","preprocessing original bases once; candidate verifier uses random access");
+        reference_access = std::make_unique<IndexedReference>(o.reference_cache);
+    }
+    ReferenceInfo info = inspect_reference(o, reference_bed,reference_access.get());
+    if (reference_access) reference_access->finish();
+    production_log.event("reference","stage_completed","contigs=" + std::to_string(info.ids.size()) +
+        " bases=" + std::to_string(info.total_bases) + " valid_windows=" + std::to_string(info.valid_windows) +
+        " ambiguous_bases=" + std::to_string(info.ambiguous_bases) + " softmasked_bases=" + std::to_string(info.softmasked_bases) +
+        " bins=" + std::to_string(info.bin_count) + " reference_sha256=" + info.sequence_sha256);
+    double nominal_any_bin_fpr = o.mode != "exact" ? diagnose_ibf(o,info) : 0;
+    if (o.ibf_dry_run) {
+        production_log.event("finish","run_completed","dry_run=true; no index allocated or queries processed");
+        return 0;
+    }
     if (o.fdr_control_per_bin && !o.per_bin_exact_verify)
-        std::cerr << "Warning: per-bin candidate scores are unverified IBF evidence, not exact recovery or FDR control.\n";
+        production_log.event("candidate","warning","per-bin candidate scores are unverified IBF evidence, not exact recovery or FDR control",3);
     for (auto const & [id, intervals] : reference_bed.intervals)
     {
         auto it = std::find(info.ids.begin(), info.ids.end(), id);
@@ -2171,6 +2424,8 @@ int run(Options o)
     double inspect_seconds = elapsed(reference_start);
     std::size_t inspect_peak = peak_rss_bytes();
     auto index_start = Clock::now();
+    production_log.event("index","stage_started",o.mode == "exact" ? "disabled (exact-only mode)" :
+        o.load_index.empty() ? "build (serial insertion)" : "load and check archive metadata/checksums");
     std::unique_ptr<Ibf> ibf;
     double index_seconds = 0, index_load_seconds = 0, index_save_seconds = 0;
     std::size_t disk_index_bytes = 0;
@@ -2179,7 +2434,7 @@ int run(Options o)
     if (!o.load_index.empty())
     {
         IndexMetadata expected = make_index_metadata(o, info, reference_bed_sha);
-        ibf = load_index_file(o.load_index, expected, info);
+        ibf = load_index_file(o.load_index, expected, info,o.ibf_max_index_memory_gb);
         disk_index_bytes = fs::file_size(o.load_index);
         index_sha = sha256_file(o.load_index);
         index_load_seconds = elapsed(index_start);
@@ -2197,15 +2452,28 @@ int run(Options o)
             save_index_file(o.save_index, meta, *ibf);
             disk_index_bytes = fs::file_size(o.save_index);
             index_sha = sha256_file(o.save_index);
-            write_index_metadata_json(o.save_index, meta, index_sha, disk_index_bytes);
+            write_index_metadata_json(o.save_index, meta, index_sha, disk_index_bytes,o);
             index_save_seconds = elapsed(save_start);
         }
     }
     std::size_t index_peak = peak_rss_bytes();
+    std::size_t physical_occupied_bits = 0;
+    auto physical_start = Clock::now();
+    if (ibf) {
+        auto const & raw = ibf->raw_data();
+        for (std::size_t word = 0; word < raw.size()/64; ++word) physical_occupied_bits += std::popcount(raw.data()[word]);
+    }
+    double physical_occupancy_seconds = elapsed(physical_start);
+    production_log.event("index","stage_completed","provenance=" + index_provenance + " bin_bits=" + std::to_string(info.bin_bits) +
+        " archive_bytes=" + std::to_string(disk_index_bytes) + " peak_RSS=" + std::to_string(index_peak) +
+        " physically_occupied_bits=" + std::to_string(physical_occupied_bits));
     double occupancy_estimate = -1, occupancy_guard_seconds = 0;
     std::size_t occupancy_guard_peak = 0;
-    if (o.mode == "ibf" && !o.fdr_control_per_bin)
+    bool occupancy_guard_ran = false;
+    if (o.mode == "ibf" && o.scoring_method == "global_ibf" &&
+        (o.legacy_global_budget || (o.genome_fpr_given && !o.auto_tune_given) || o.ibf_auto_tune == "apply"))
     {
+        occupancy_guard_ran = true;
         auto guard_start = Clock::now();
         occupancy_estimate = observed_ibf_union_estimate(*ibf, info, o);
         occupancy_guard_seconds = elapsed(guard_start);
@@ -2215,12 +2483,15 @@ int run(Options o)
                                      "--genome-fpr; use exact mode or rebuild with a smaller --fpr");
     }
     auto fragment_start = Clock::now();
+    production_log.event("fragmentation","stage_started","start-assigned bins; k-1 overlap=" + std::to_string(o.k-1));
     write_fragments(o.fragments, o, info, ibf != nullptr);
+    production_log.event("fragmentation","stage_completed","bins=" + std::to_string(info.bin_count) + " report=" + o.fragments.string());
     double fragment_seconds = elapsed(fragment_start);
     std::size_t fragment_peak = peak_rss_bytes();
 
     fs::create_directories(o.output.parent_path().empty() ? fs::path{"."} : o.output.parent_path());
-    std::ofstream out(o.output);
+    fs::path staged_output = schema3(o) ? unique_staging_path(o.output) : o.output;
+    std::ofstream out(staged_output);
     if (!out) throw std::runtime_error("Cannot write " + o.output.string());
     out << "schema_version\tquery_index\tquery_id\treference_id\tk\ttotal_windows\tvalid_windows\tinvalid_windows"
            "\tmatched_windows\tunmatched_windows\tdistinct_query_kmers\tdistinct_matched_kmers\ttotal_bin_hits"
@@ -2239,7 +2510,15 @@ int run(Options o)
            "\texon_aware_recovery\tnumber_of_discovered_loci\tbest_locus_matched_windows"
            "\tbest_locus_recovery\tbest_locus_contig\tbest_locus_start\tbest_locus_end"
            "\texpected_locus_count\texpected_locus_matched_windows\texpected_locus_recovery"
-           "\toff_expected_locus_windows\texpected_locus_hit_rows\n";
+           "\toff_expected_locus_windows\texpected_locus_hit_rows";
+    if (schema3(o)) out << "\tscoring_method\tprimary_match_source\tglobal_ibf_recovery\tper_bin_candidate_count"
+        "\tper_bin_candidate_window_support\tper_bin_ibf_recovery\tper_bin_verified_local_recovery"
+        "\tper_bin_verified_locus_count\texact_global_recovery\tverification_scope\tresult_certainty"
+        "\tindex_fpr_per_bin\tindex_fpr_genome_target\texact_global_status\tglobal_ibf_status"
+        "\tper_bin_ibf_status\tper_bin_verified_status\tcandidate_window_recall\tcandidate_false_positive_windows"
+        "\tcandidate_false_negative_windows\tcandidate_recovery_difference\tbins_rejected_min_hits\tbins_rejected_fraction"
+        "\tper_bin_ibf_false_positive_windows\tper_bin_ibf_false_negative_windows";
+    out << '\n';
     std::ofstream per_bin_file, per_bin_candidates_file;
     if (o.fdr_control_per_bin)
     {
@@ -2260,7 +2539,9 @@ int run(Options o)
         per_bin_candidates_file << "schema_version\tquery_index\tquery_id\treference_id\tk\trank"
                                    "\tcontig\tstart\tend\tsequence_end\tcandidate_bin_count\tmax_bin_hits"
                                    "\tsum_bin_hits\tmax_bin_support\texact_local_matched_windows"
-                                   "\texact_local_recovery\texact_concentration\tverification_status\n";
+                                   "\texact_local_recovery\texact_concentration\tverification_status";
+        if (schema3(o)) per_bin_candidates_file << "\tsource_bin_ids";
+        per_bin_candidates_file << '\n';
     }
     PositionWriter position_writer{o.positions};
     std::ofstream repeat_class_file;
@@ -2310,13 +2591,15 @@ int run(Options o)
     ExpectedLoci expected_loci = load_expected_loci(o, info);
 
     Totals totals;
-    if (o.mode == "calibrate")
+    if (o.mode == "calibrate" || (o.mode == "validate" && o.fdr_control_per_bin))
     {
         totals.bin_exact_present.resize(info.bin_count);
         totals.bin_fp.resize(info.bin_count);
         totals.bin_fn.resize(info.bin_count);
     }
     std::vector<Query> batch;
+    struct PendingQuery { std::string id; std::size_t index; std::string sequence; };
+    std::vector<PendingQuery> pending;
     std::size_t batch_size = 0, query_index = 0;
     std::size_t batch_positive_bin_pairs = 0;
     std::string query_id, sequence;
@@ -2326,13 +2609,69 @@ int run(Options o)
     query_sha.update("FragIncRNA-FASTA-semantic-v1");
     std::size_t query_sequence_length = 0;
     bool first = true;
+    production_log.event("query","stage_started","bounded input batches; ordered output; totals/ETA unknown until EOF");
     auto flush = [&]()
     {
-        if (batch.empty()) return;
+        if (pending.empty()) return;
         auto t = Clock::now();
+        batch.resize(pending.size());
+        // Waves maintain progress and cap simultaneously live agents/readers.
+        for (std::size_t base = 0; base < pending.size(); base += o.actual_threads) {
+            auto count = std::min<std::size_t>(o.actual_threads,pending.size()-base);
+            auto membership_start = Clock::now();
+            fraglncrna::parallel_records(count,static_cast<int>(o.actual_threads),[&](std::size_t offset) {
+                auto qi = base + offset;
+                auto & raw = pending[qi];
+                batch[qi] = make_query(raw.id,raw.index,raw.sequence,o,ibf.get(),query_bed);
+                std::string{}.swap(raw.sequence);
+            });
+            totals.query_seconds += elapsed(membership_start);
+            auto selection_start = Clock::now();
+            fraglncrna::parallel_records(count,static_cast<int>(o.actual_threads),[&](std::size_t offset) {
+                prepare_per_bin_query(batch[base+offset],o,info,ibf.get());
+            });
+            totals.candidate_selection_seconds += elapsed(selection_start);
+            production_log.progress("query","prepared=" + std::to_string(base+count) + "/" + std::to_string(pending.size()));
+        }
+        pending.clear();
+        auto prepared = std::move(batch);
+        std::size_t from = 0;
+        while (from < prepared.size()) {
+        batch.clear(); std::size_t pairs = 0;
+        do {
+            pairs += prepared[from].positive_bin_pairs;
+            batch.push_back(std::move(prepared[from++]));
+        } while (from < prepared.size() && prepared[from].positive_bin_pairs <= o.max_ibf_bin_pairs-pairs);
+        ++totals.batches;
         ExactResult exact_result;
-        if (o.mode != "ibf") exact_result = exact_batch(o, info, reference_bed, batch);
-        totals.exact_seconds += elapsed(t);
+        if (o.mode != "ibf") {
+            production_log.event("global-exact","stage_started","independent whole_reference truth batch=" + std::to_string(totals.batches));
+            t = Clock::now();
+            exact_result = exact_batch(o, info, reference_bed, batch);
+            totals.exact_seconds += elapsed(t);
+            totals.global_reference_scans += exact_result.whole_reference_bases > 0;
+            totals.whole_reference_bases_visited += exact_result.whole_reference_bases;
+            production_log.event("global-exact","stage_completed","scans=" + std::to_string(totals.global_reference_scans) +
+                " reference_bases_per_scan=" + std::to_string(info.total_bases));
+            if (o.mode == "validate" && o.fdr_control_per_bin) {
+                auto bin_start = Clock::now();
+                compare_validation_bins(o,batch,exact_result,*ibf,totals);
+                totals.per_bin_comparison_seconds += elapsed(bin_start);
+            }
+        }
+        if (reference_access) {
+            production_log.event("verify","stage_started","candidate_intervals only; no FASTA rescan");
+            t = Clock::now();
+            verify_candidate_intervals(o,info,reference_bed,batch,*reference_access,exact_result);
+            totals.candidate_verification_seconds += elapsed(t);
+            totals.candidate_reference_bases += exact_result.candidate_reference_bases;
+            totals.candidate_interval_reads += exact_result.candidate_interval_reads;
+            totals.candidate_cache_hits += exact_result.candidate_cache_hits;
+            totals.candidate_cache_insertions += exact_result.candidate_cache_insertions;
+            production_log.event("verify","stage_completed","fetched_bases=" + std::to_string(exact_result.candidate_reference_bases) +
+                " interval_reads=" + std::to_string(exact_result.candidate_interval_reads) +
+                " repeated_keys_skipped=" + std::to_string(exact_result.candidate_cache_hits));
+        }
         t = Clock::now();
         write_batch(out, o, ref_id, batch, exact_result, info, position_writer, totals,
                     repeat_class_file.is_open() ? &repeat_class_file : nullptr, query_bed, exon_blocks,
@@ -2342,6 +2681,11 @@ int run(Options o)
                     per_bin_file.is_open() ? &per_bin_file : nullptr,
                     per_bin_candidates_file.is_open() ? &per_bin_candidates_file : nullptr);
         totals.result_seconds += elapsed(t);
+        production_log.progress("query","completed=" + std::to_string(totals.queries) +
+            " valid_windows=" + std::to_string(totals.valid) + " batches=" + std::to_string(totals.batches) +
+            " candidate_loci=" + std::to_string(totals.per_bin_candidate_regions) + " peak_RSS=" + std::to_string(peak_rss_bytes()) +
+            " queries_per_second=" + std::to_string(totals.queries/std::max(1e-9,elapsed(run_start))),true);
+        }
         batch.clear(); batch_size = 0; batch_positive_bin_pairs = 0;
     };
     auto finish_query = [&]()
@@ -2357,20 +2701,16 @@ int run(Options o)
             for (auto const & block : exon_it->second)
                 if (block.query_end > sequence.size())
                     throw std::runtime_error("Exon block outside query: " + query_id);
-        auto t = Clock::now();
-        Query q = make_query(query_id, query_index++, sequence, o, ibf.get(), query_bed);
-        prepare_per_bin_query(q, o, info);
-        totals.query_seconds += elapsed(t);
-        if (o.mode == "calibrate" || o.fdr_control_per_bin)
-        {
-            if (q.positive_bin_pairs > o.max_ibf_bin_pairs - batch_positive_bin_pairs)
-                flush();
-            batch_positive_bin_pairs += q.positive_bin_pairs;
-        }
-        batch_size += q.windows.size();
-        batch.push_back(std::move(q));
+        std::size_t windows = sequence.size() < o.k ? 0 : sequence.size()-o.k+1;
+        // Calibration retains bin IDs, so its in-flight allocation is bounded
+        // conservatively by windows*B before dispatching workers.
+        if (o.mode == "calibrate" && !pending.empty() && info.bin_count &&
+            windows > o.max_ibf_bin_pairs/info.bin_count - std::min(batch_size,o.max_ibf_bin_pairs/info.bin_count)) flush();
+        if (!pending.empty() && windows > o.batch_windows-std::min(batch_size,o.batch_windows)) flush();
+        batch_size += windows;
+        pending.push_back({query_id,query_index++,std::move(sequence)});
         sequence.clear();
-        if (batch_size >= o.batch_windows) flush();
+        if (batch_size >= o.batch_windows || pending.size() >= o.progress_every_queries) flush();
     };
     scan_fasta(o.queries,
         [&](std::string const & id)
@@ -2402,6 +2742,7 @@ int run(Options o)
     for (auto const & [id, ignored] : expected_loci)
         if (!seen_query_ids.contains(id)) throw std::runtime_error("Expected-locus query missing from FASTA: " + id);
     flush();
+    production_log.event("query","stage_completed","queries=" + std::to_string(totals.queries) + " windows=" + std::to_string(totals.valid));
     position_writer.close();
     if (repeat_class_file.is_open())
     {
@@ -2425,6 +2766,7 @@ int run(Options o)
     }
     if (!out) throw std::runtime_error("Failed writing result TSV");
     out.close();
+    if (!out) throw std::runtime_error("Failed closing result TSV; partial output retained");
     if (per_bin_file.is_open())
     {
         per_bin_file.close();
@@ -2436,6 +2778,12 @@ int run(Options o)
     std::size_t occupied_bits_total = 0;
     double occupancy_seconds = 0;
     std::size_t occupancy_peak = 0;
+    if (o.mode == "validate" && o.fdr_control_per_bin) {
+        for (std::size_t bin = 0; bin < info.bin_count; ++bin) {
+            absent_bin_pairs += totals.valid - totals.bin_exact_present[bin];
+            fp_bin_pairs += totals.bin_fp[bin]; fn_bin_pairs += totals.bin_fn[bin];
+        }
+    }
     if (o.mode == "calibrate")
     {
         auto occupancy_start = Clock::now();
@@ -2478,10 +2826,14 @@ int run(Options o)
         if (!bins_out) throw std::runtime_error("Failed writing calibration bins");
     }
     fs::create_directories(o.metrics.parent_path().empty() ? fs::path{"."} : o.metrics.parent_path());
-    std::ofstream metrics(o.metrics);
+    fs::path staged_metrics = schema3(o) ? unique_staging_path(o.metrics) : o.metrics;
+    std::ofstream metrics(staged_metrics);
     if (!metrics) throw std::runtime_error("Cannot write metrics JSON");
-    metrics << std::fixed << std::setprecision(12)
-            << "{\n  \"schema_version\": 2,\n  \"software\": \"lncrna_mers_v2\",\n"
+    rusage cpu_usage{}; getrusage(RUSAGE_SELF,&cpu_usage);
+    double user_cpu = cpu_usage.ru_utime.tv_sec + cpu_usage.ru_utime.tv_usec/1e6;
+    double system_cpu = cpu_usage.ru_stime.tv_sec + cpu_usage.ru_stime.tv_usec/1e6;
+    metrics << std::defaultfloat << std::setprecision(17)
+            << "{\n  \"schema_version\": " << (schema3(o) ? 3 : 2) << ",\n  \"software\": \"lncrna_mers_v2\",\n"
             << "  \"software_version\": \"2-preview.3\",\n"
             << "  \"semantic_fasta_hash_encoding\": \"FragIncRNA-FASTA-semantic-v1\",\n"
             << "  \"compiler_version\": " << json_string(__VERSION__) << ",\n"
@@ -2544,22 +2896,32 @@ int run(Options o)
             << "  \"configured_per_bin_fpr\": " << o.fpr << ",\n"
             << "  \"requested_per_bin_fpr_cap\": " << o.requested_per_bin_fpr << ",\n"
             << "  \"target_genome_wide_fpr\": ";
-    if ((o.mode == "ibf" && !o.fdr_control_per_bin) || o.genome_fpr_given)
+    if (o.legacy_global_budget || o.genome_fpr_given || (o.scoring_method == "global_ibf" && o.ibf_auto_tune == "apply"))
         metrics << o.genome_fpr;
     else metrics << "null";
     metrics << ",\n  \"observed_occupancy_union_estimate\": ";
-    if (o.mode == "ibf" && !o.fdr_control_per_bin) metrics << occupancy_estimate; else metrics << "null";
+    if (occupancy_guard_ran) metrics << occupancy_estimate; else metrics << "null";
     metrics << ",\n  \"occupancy_guard_seconds\": ";
-    if (o.mode == "ibf" && !o.fdr_control_per_bin) metrics << occupancy_guard_seconds; else metrics << "null";
+    if (occupancy_guard_ran) metrics << occupancy_guard_seconds; else metrics << "null";
     metrics << ",\n  \"peak_rss_after_occupancy_guard_bytes\": ";
-    if (o.mode == "ibf" && !o.fdr_control_per_bin) metrics << occupancy_guard_peak; else metrics << "null";
+    if (occupancy_guard_ran) metrics << occupancy_guard_peak; else metrics << "null";
     metrics << ",\n  \"fragment_output_seconds\": " << fragment_seconds
             << ",\n  \"peak_rss_after_fragment_output_bytes\": " << fragment_peak
             << ",\n"
             << "  \"nominal_any_bin_fpr_independent_bins\": " << nominal_any_bin_fpr << ",\n"
-            << "  \"primary_match_source\": " << json_string(o.mode == "ibf" ? "ibf" : "exact") << ",\n"
+            << "  \"primary_match_source\": " << json_string(o.scoring_method == "global_exact" ? "exact" :
+                 o.scoring_method == "per_bin_verified" ? "candidate_exact" : o.scoring_method == "per_bin_ibf" ? "ibf_candidates" : "ibf") << ",\n"
+            << "  \"scoring_method\": " << json_string(o.scoring_method) << ",\n"
+            << "  \"git_sha\": " << json_string(FRAGLNCRNA_GIT_SHA) << ",\n"
+            << "  \"run_id\": " << json_string(production_log.run_id()) << ",\n"
+            << "  \"log_file\": " << json_string(o.log_file.string()) << ",\n"
+            << "  \"log_level\": " << json_string(o.log_level) << ",\n"
+            << "  \"warning_count\": " << production_log.warnings << ",\n"
+            << "  \"ibf_tuning_report\": " << json_string(o.mode == "exact" ? "" : o.ibf_tuning_report.string()) << ",\n"
             << "  \"calibration_bins\": " << json_string(o.calibration_bins.string()) << ",\n"
             << "  \"bin_bits\": " << info.bin_bits << ",\n"
+            << "  \"physical_occupied_bits_all_modes\": " << physical_occupied_bits << ",\n"
+            << "  \"physical_occupancy_seconds\": " << physical_occupancy_seconds << ",\n"
             << "  \"distinct_bin_kmers_sum\": ";
     if (ibf) metrics << std::accumulate(info.bin_distinct.begin(), info.bin_distinct.end(), std::size_t{0});
     else metrics << "null";
@@ -2572,19 +2934,43 @@ int run(Options o)
     metrics << ",\n"
             << "  \"max_calibration_pairs_per_batch\": " << o.max_calibration_pairs << ",\n"
             << "  \"max_ibf_bin_pairs_per_batch\": " << o.max_ibf_bin_pairs << ",\n"
-            << "  \"threads\": 1,\n"
+            << "  \"threads\": " << o.actual_threads << ",\n"
+            << "  \"requested_threads\": " << o.threads << ",\n"
+            << "  \"parallel_backend\": " << json_string(
+#ifdef _OPENMP
+                 "openmp"
+#else
+                 "serial"
+#endif
+               ) << ",\n"
+            << "  \"candidate_reference_bases_fetched\": " << totals.candidate_reference_bases << ",\n"
+            << "  \"candidate_reference_bytes_read\": " << totals.candidate_reference_bases << ",\n"
+            << "  \"candidate_interval_reads\": " << totals.candidate_interval_reads << ",\n"
+            << "  \"candidate_repeated_reference_keys_skipped\": " << totals.candidate_cache_hits << ",\n"
+            << "  \"candidate_key_cache_insertions\": " << totals.candidate_cache_insertions << ",\n"
+            << "  \"candidate_key_cache_limit_per_worker\": 8192,\n"
+            << "  \"candidate_verification_seconds\": " << totals.candidate_verification_seconds << ",\n"
+            << "  \"candidate_selection_seconds\": " << totals.candidate_selection_seconds << ",\n"
+            << "  \"per_bin_comparison_seconds\": " << totals.per_bin_comparison_seconds << ",\n"
+            << "  \"whole_reference_exact_scans\": " << totals.global_reference_scans << ",\n"
+            << "  \"whole_reference_exact_bases_visited\": " << totals.whole_reference_bases_visited << ",\n"
+            << "  \"reference_cache_preprocessing_bases\": " << (reference_access ? info.total_bases : 0) << ",\n"
+            << "  \"reference_cache_reused\": " << (reference_access && reference_access->reused() ? "true" : "false") << ",\n"
+            << "  \"query_batches\": " << totals.batches << ",\n"
             << "  \"total_reference_bases\": " << info.total_bases << ",\n"
+            << "  \"reference_ambiguous_bases\": " << info.ambiguous_bases << ",\n"
+            << "  \"reference_softmasked_bases\": " << info.softmasked_bases << ",\n"
             << "  \"valid_reference_windows\": " << info.valid_windows << ",\n"
             << "  \"query_count\": " << totals.queries << ",\n"
             << "  \"valid_query_windows\": " << totals.valid << ",\n"
             << "  \"per_bin_queries_with_candidates\": " << totals.per_bin_queries_with_candidates << ",\n"
             << "  \"per_bin_candidate_bins\": " << totals.per_bin_candidate_bins << ",\n"
             << "  \"per_bin_candidate_loci\": " << totals.per_bin_candidate_regions << ",\n"
-            << "  \"per_bin_verified_candidate_loci\": " << totals.per_bin_verified_regions << ",\n"
-            << "  \"per_bin_rejected_candidate_loci\": " << totals.per_bin_rejected_regions << ",\n"
-            << "  \"per_bin_missed_global_exact_queries\": " << totals.per_bin_missed_exact_queries << ",\n"
+            << "  \"per_bin_verified_candidate_loci\": " << (o.fdr_control_per_bin && o.per_bin_exact_verify ? std::to_string(totals.per_bin_verified_regions) : "null") << ",\n"
+            << "  \"per_bin_rejected_candidate_loci\": " << (o.fdr_control_per_bin && o.per_bin_exact_verify ? std::to_string(totals.per_bin_rejected_regions) : "null") << ",\n"
+            << "  \"per_bin_missed_global_exact_queries\": " << (o.mode != "ibf" && o.fdr_control_per_bin && o.per_bin_exact_verify ? std::to_string(totals.per_bin_missed_exact_queries) : "null") << ",\n"
             << "  \"per_bin_global_exact_windows_outside_candidates\": "
-            << totals.per_bin_exact_windows_outside_candidates << ",\n"
+            << (o.mode != "ibf" && o.fdr_control_per_bin && o.per_bin_exact_verify ? std::to_string(totals.per_bin_exact_windows_outside_candidates) : "null") << ",\n"
             << "  \"per_bin_top_k_dropped_bins\": " << totals.per_bin_top_k_dropped << ",\n"
             << "  \"discovered_locus_rows\": ";
     if (o.loci_output.empty()) metrics << "null"; else metrics << totals.discovered_locus_rows;
@@ -2602,8 +2988,8 @@ int run(Options o)
     if (o.exon_blocks.empty() || !totals.exon_eligible) metrics << "null";
     else metrics << static_cast<double>(totals.exon_matched) / totals.exon_eligible;
     metrics << ",\n"
-            << "  \"tested_absent_windows\": " << totals.absent << ",\n"
-            << "  \"exact_positive_windows\": " << totals.exact_positive << ",\n"
+            << "  \"tested_absent_windows\": " << (o.mode == "ibf" ? "null" : std::to_string(totals.absent)) << ",\n"
+            << "  \"exact_positive_windows\": " << (o.mode == "ibf" ? "null" : std::to_string(totals.exact_positive)) << ",\n"
             << "  \"false_positive_windows\": ";
     if (o.mode == "exact" || o.mode == "ibf") metrics << "null"; else metrics << totals.fp;
     metrics << ",\n  \"false_negative_windows\": ";
@@ -2612,13 +2998,13 @@ int run(Options o)
     if (o.mode == "exact" || o.mode == "ibf" || !totals.exact_positive) metrics << "null";
     else metrics << static_cast<double>(totals.fn) / totals.exact_positive;
     metrics << ",\n  \"tested_absent_bin_pairs\": ";
-    if (o.mode == "calibrate") metrics << absent_bin_pairs; else metrics << "null";
+    if (o.mode == "calibrate" || (o.mode == "validate" && o.fdr_control_per_bin)) metrics << absent_bin_pairs; else metrics << "null";
     metrics << ",\n  \"false_positive_bin_pairs\": ";
-    if (o.mode == "calibrate") metrics << fp_bin_pairs; else metrics << "null";
+    if (o.mode == "calibrate" || (o.mode == "validate" && o.fdr_control_per_bin)) metrics << fp_bin_pairs; else metrics << "null";
     metrics << ",\n  \"false_negative_bin_pairs\": ";
-    if (o.mode == "calibrate") metrics << fn_bin_pairs; else metrics << "null";
+    if (o.mode == "calibrate" || (o.mode == "validate" && o.fdr_control_per_bin)) metrics << fn_bin_pairs; else metrics << "null";
     metrics << ",\n  \"measured_per_bin_fpr\": ";
-    if (o.mode == "calibrate" && absent_bin_pairs) metrics << static_cast<double>(fp_bin_pairs) / absent_bin_pairs;
+    if ((o.mode == "calibrate" || (o.mode == "validate" && o.fdr_control_per_bin)) && absent_bin_pairs) metrics << static_cast<double>(fp_bin_pairs) / absent_bin_pairs;
     else metrics << "null";
     metrics << ",\n"
             << "  \"measured_genome_wide_fpr\": ";
@@ -2639,9 +3025,28 @@ int run(Options o)
             << (totals.query_seconds > 0 ? totals.valid / totals.query_seconds : 0.0)
             << ",\n  \"total_seconds\": " << elapsed(run_start)
             << ",\n  \"peak_resident_bytes\": " << peak_rss_bytes()
-            << ",\n  \"disk_index_bytes\": " << disk_index_bytes << "\n}\n";
-    std::cerr << "Wrote " << totals.queries << " query rows; elapsed=" << elapsed(run_start)
-              << " s; peak RSS=" << peak_rss_bytes() << " bytes\n";
+            << ",\n  \"disk_index_bytes\": " << disk_index_bytes
+            << ",\n  \"user_cpu_seconds\": " << user_cpu
+            << ",\n  \"system_cpu_seconds\": " << system_cpu
+            << ",\n  \"status_counts\": {";
+    bool first_status = true;
+    for (auto const & [label,count] : totals.status_counts) {
+        if (!first_status) metrics << ',';
+        metrics << json_string(label) << ':' << count; first_status = false;
+    }
+    metrics << "}\n}\n";
+    metrics.close();
+    if (!metrics) throw std::runtime_error("Failed finalizing metrics JSON; output is incomplete");
+    if (schema3(o)) {
+        production_log.event("output","stage_started","finalize checked main TSV and metrics JSON; sidecars may be partial on failure");
+        fs::rename(staged_output,o.output); fs::rename(staged_metrics,o.metrics);
+        production_log.event("output","stage_completed","rows=" + std::to_string(totals.queries) +
+            " tsv_bytes=" + std::to_string(fs::file_size(o.output)) + " sha256=" + sha256_file(o.output));
+    }
+    production_log.event("finish","run_completed","Wrote " + std::to_string(totals.queries) + " query rows; total_seconds=" +
+        std::to_string(elapsed(run_start)) + " peak_RSS=" + std::to_string(peak_rss_bytes()) +
+        " warnings=" + std::to_string(production_log.warnings) + " errors=" + std::to_string(production_log.errors) +
+        " output=" + o.output.string() + " metrics=" + o.metrics.string());
     return 0;
 }
 } // namespace
@@ -2649,5 +3054,10 @@ int run(Options o)
 int main(int argc, char ** argv)
 {
     try { return run(parse_options(argc, argv)); }
-    catch (std::exception const & e) { std::cerr << "Error: " << e.what() << '\n'; return 1; }
+    catch (std::exception const & e) {
+        try { fraglncrna::production_log.event("failure","stage_failed",e.what(),4);
+              fraglncrna::production_log.event("finish","run_failed",std::string("partial outputs must not be used; Error: ") + e.what(),4); }
+        catch (...) {}
+        std::cerr << "Error: " << e.what() << '\n'; return 1;
+    }
 }

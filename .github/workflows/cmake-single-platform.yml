@@ -2,9 +2,9 @@ name: CMake tests
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "reporting" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "reporting" ]
 
 env:
   BUILD_TYPE: Release
