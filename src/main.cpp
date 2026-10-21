@@ -261,7 +261,12 @@ int main(int argc, char ** argv)
             }
         };
 
-        if (cfg.kmer_size > 27)
+        if (cfg.index_method == IndexMethod::ibf)
+        {
+            Logger::info("Flat IBF: using position-preserving dna5 windows for k 1..32.");
+            run_with_alphabet.operator()<seqan3::dna5_vector>();
+        }
+        else if (cfg.kmer_size > 27)
         {
             Logger::info("kmer_size > 27: using dna4 alphabet and removing N bases before k-mer hashing.");
             run_with_alphabet.operator()<seqan3::dna4_vector>();

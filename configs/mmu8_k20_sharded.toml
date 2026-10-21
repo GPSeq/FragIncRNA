@@ -1,0 +1,110 @@
+
+[v2]
+
+# INPUTS
+reference = "/mnt/d/primates_bmc/review/FragIncRNA/rerun_test/genomes/T2TMMU8v20_GCF_049350105.2_T2T-MMU8v2.0_genomic.fna.gz"
+queries = "/mnt/d/primates_bmc/review/FragIncRNA/rerun_test/gencode.v49.lncRNA_transcripts.fa"
+
+# OUTPUTS
+output = "/mnt/d/primates_bmc/review/FragIncRNA/rerun_test/outputs/mmu8_k20_sharded_verified.tsv"
+metrics = ""
+
+# MAIN ALGORITHM
+mode = "ibf"
+scoring_method = "per_bin_verified"
+
+k = 20
+strand = "canonical"
+ambiguity = "skip"
+fragment_size = 80000
+fragments = ""
+threads = 15
+
+# BLOOM FILTER
+hash_functions = 3
+fpr = 0.01
+
+save_index = ""
+load_index = ""
+
+# SHARDED IBF
+ibf_layout = "sharded"
+max_bins_per_ibf = 1000
+
+ibf_shard_dir = "/mnt/d/primates_bmc/review/FragIncRNA/rerun_test/indexes/mmu8_k20_80k_fpr001_sharded"
+
+ibf_shard_storage = "disk"
+ibf_shard_retention = "keep"
+ibf_shard_reuse = true
+ibf_resume = true
+ibf_build_only = false
+
+# PER-BIN MATCHING
+fdr_control_per_bin = true
+per_bin_min_hits = 2
+per_bin_min_fraction = 0.02
+per_bin_top_k = 256
+per_bin_max_locus_gap = 50000
+per_bin_exact_verify = true
+per_bin_output = ""
+
+# CLASSIFICATION
+basic_threshold = 0.75
+strict_threshold = 0.85
+threshold_table = ""
+evaluation_control_set = ""
+
+# REPEAT SETTINGS
+repeat = "include"
+mask_target = "both"
+reference_repeat_bed = ""
+query_repeat_bed = ""
+repeat_classes = ""
+reference_hit_classes = ""
+max_repeat_intervals = 5000000
+
+# OPTIONAL POSITIONAL OUTPUTS
+positions = ""
+max_position_rows = 1000000
+
+# local_window intentionally omitted in IBF mode
+discover_loci = ""
+locus_gap = 8000
+max_locus_span = 1000000
+max_locus_rows = 100000
+
+expected_loci_bed = ""
+expected_loci_output = ""
+max_expected_loci = 1000000
+
+exon_blocks = ""
+max_exon_blocks = 1000000
+
+# PERFORMANCE AND RESOURCE LIMITS
+batch_windows = 500000
+max_query_bases = 50000000
+
+# FIX FOR PREVIOUS ERROR
+max_ibf_bin_pairs = 100000000
+
+max_calibration_pairs = 10000000
+
+# REFERENCE CACHE
+reference_cache = ""
+
+# IBF FPR DIAGNOSTICS
+ibf_auto_tune = "recommend"
+ibf_max_index_memory_gb = 0
+ibf_fail_on_unsafe_settings = false
+ibf_tuning_report = ""
+ibf_dry_run = false
+
+# LOGGING
+log_file = ""
+log_level = "info"
+log_to_console = true
+log_per_query = false
+log_per_bin = false
+
+progress_interval_seconds = 10
+progress_every_queries = 1000

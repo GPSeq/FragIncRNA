@@ -58,7 +58,7 @@ Fragmenter<sequence_t>::fragment_reference(std::filesystem::path const & ref_pat
                                            std::string const & ref_id) const
 {
     if (cfg_.fragment_size < 4)
-        throw std::runtime_error{"fragment_size must be >= 4 (to allow 3 bp overlap)."};
+        throw std::runtime_error{"fragment_size must be >= 4."};
 
     std::vector<sequence_t> fragments;
 
@@ -67,7 +67,8 @@ Fragmenter<sequence_t>::fragment_reference(std::filesystem::path const & ref_pat
     seqan3::sequence_file_input ref_in{ref_path};
 
     std::size_t frag_len = cfg_.fragment_size;
-    std::size_t overlap = 3;
+    std::size_t overlap = cfg_.index_method == IndexMethod::ibf ?
+                          std::min(cfg_.kmer_size ? cfg_.kmer_size - 1 : 0, frag_len - 1) : 3;
     std::size_t step = frag_len > overlap ? frag_len - overlap : 1;
 
     bool write_frags = cfg_.store_fragments;
@@ -142,7 +143,7 @@ Fragmenter<sequence_t>::fragment_reference(std::filesystem::path const & ref_pat
 
     Logger::info("Reference '" + ref_id + "' fragmented into " +
                  std::to_string(fragments.size()) + " fragments (len=" +
-                 std::to_string(cfg_.fragment_size) + ", overlap=3).");
+                 std::to_string(cfg_.fragment_size) + ", overlap=" + std::to_string(overlap) + ").");
 
     return fragments;
 }

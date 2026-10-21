@@ -1,0 +1,16 @@
+>reverse_only
+GCTT
+>contig_join
+AATT
+>n_join
+GCAA
+>duplicated
+AAGCAAGC
+>palindrome
+ACGT
+>all_n
+NNNN
+>short
+AAA
+>softmasked
+aagc

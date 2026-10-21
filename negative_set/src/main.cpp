@@ -431,7 +431,7 @@ chromosome_fragment_bins_for_index(std::vector<Chromosome> const & chromosomes,
     std::vector<seqan3::dna5_vector> bins;
 
     std::size_t const frag_len = cfg.fragment_size;
-    std::size_t const overlap = 3;
+    std::size_t const overlap = cfg.kmer_size - 1;
     std::size_t const step = frag_len > overlap ? frag_len - overlap : 1;
 
     for (auto const & chromosome : chromosomes)
@@ -578,7 +578,7 @@ int main(int argc, char ** argv)
         Logger::info("Selected chromosome(s) fragmented into " +
                      std::to_string(chromosome_bins.size()) +
                      " IBF bin(s) (len=" + std::to_string(cfg.fragment_size) +
-                     ", overlap=3).");
+                     ", overlap=" + std::to_string(cfg.kmer_size - 1) + ").");
         ReferenceIndexDna5 index{"negative_set_chromosome_fragments", chromosome_bins, index_cfg};
 
         write_outputs(chromosomes, samples, index, cfg);

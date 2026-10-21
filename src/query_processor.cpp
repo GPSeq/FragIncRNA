@@ -198,7 +198,9 @@ void QueryProcessor<sequence_t>::run_fill_results_col(std::size_t ref_idx,
         if (q >= total_queries)
             throw std::runtime_error("More queries in file than allocated rows in results matrix.");
 
-        auto seq = sanitize_query_sequence<sequence_t>(record.sequence());
+        auto seq = cfg_.index_method == IndexMethod::ibf ?
+                   sequence_t{record.sequence().begin(), record.sequence().end()} :
+                   sanitize_query_sequence<sequence_t>(record.sequence());
         std::size_t total_kmers =
             seq.size() >= cfg_.kmer_size ? seq.size() - cfg_.kmer_size + 1 : 0;
 
@@ -314,7 +316,9 @@ void QueryProcessor<sequence_t>::run_write_per_ibf(std::filesystem::path const &
 
     for (auto & record : query_in)
     {
-        auto seq = sanitize_query_sequence<sequence_t>(record.sequence());
+        auto seq = cfg_.index_method == IndexMethod::ibf ?
+                   sequence_t{record.sequence().begin(), record.sequence().end()} :
+                   sanitize_query_sequence<sequence_t>(record.sequence());
 
         std::size_t total_kmers =
             seq.size() >= cfg_.kmer_size ? seq.size() - cfg_.kmer_size + 1 : 0;
