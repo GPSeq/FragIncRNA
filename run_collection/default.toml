@@ -1,0 +1,102 @@
+# FragIncRNA v2 — template for run_fraglncrna_grid.py.
+# Do not edit reference/queries/output/k/hash_functions/threads/ibf_shard_dir
+# for a grid run: the Python runner generates a separate TOML for every job.
+# Template values below are valid examples and are overridden by the runner.
+# Python >= 3.11, no third-party packages needed.
+
+[v2]
+# Inputs (overridden)
+reference = "/mnt/d/primates_bmc/review/FragIncRNA/rerun_test/genomes/T2TMMU8v20_GCF_049350105.2_T2T-MMU8v2.0_genomic.fna.gz"
+queries = "/mnt/d/primates_bmc/review/FragIncRNA/rerun_test/gencode.v49.lncRNA_transcripts.fa"
+
+# Outputs (overridden; all outputs go into an isolated per-job directory)
+output = "/mnt/d/primates_bmc/review/FragIncRNA/rerun_test/outputs/mmu8_k20_sharded_verified.tsv"
+metrics = ""
+
+# Main algorithm
+mode = "ibf"
+scoring_method = "per_bin_verified"
+k = 20
+strand = "canonical"
+ambiguity = "skip"
+fragment_size = 80000
+fragments = ""
+threads = 15
+
+# Bloom filter
+hash_functions = 3
+fpr = 0.01
+save_index = ""
+load_index = ""
+
+# Sharded IBF; the runner manages the cache directory's lifecycle
+ibf_layout = "sharded"
+max_bins_per_ibf = 1000
+ibf_shard_dir = "/mnt/d/primates_bmc/review/FragIncRNA/rerun_test/indexes/mmu8_k20_80k_fpr001_sharded"
+ibf_shard_storage = "disk"
+ibf_shard_retention = "keep"
+ibf_shard_reuse = true
+ibf_resume = true
+ibf_build_only = false
+
+# Candidate selection and exact verification
+# The name fdr_control_per_bin is historical; it does NOT guarantee statistical FDR.
+fdr_control_per_bin = true
+per_bin_min_hits = 2
+per_bin_min_fraction = 0.02
+per_bin_top_k = 256
+per_bin_max_locus_gap = 50000
+per_bin_exact_verify = true
+per_bin_output = ""
+
+# Transcript classification
+basic_threshold = 0.75
+strict_threshold = 0.85
+threshold_table = ""
+evaluation_control_set = ""
+
+# Repeats
+repeat = "include"
+mask_target = "both"
+reference_repeat_bed = ""
+query_repeat_bed = ""
+repeat_classes = ""
+reference_hit_classes = ""
+max_repeat_intervals = 5000000
+
+# Optional reports (disabled; main TSV and per-bin sidecars still generated)
+positions = ""
+max_position_rows = 1000000
+# local_window is incompatible with mode="ibf", intentionally omitted.
+discover_loci = ""
+locus_gap = 8000
+max_locus_span = 1000000
+max_locus_rows = 100000
+expected_loci_bed = ""
+expected_loci_output = ""
+max_expected_loci = 1000000
+exon_blocks = ""
+max_exon_blocks = 1000000
+
+# Resources
+batch_windows = 500000
+max_query_bases = 50000000
+max_ibf_bin_pairs = 100000000
+max_calibration_pairs = 10000000
+reference_cache = ""
+
+# Diagnostics
+ibf_auto_tune = "recommend"
+ibf_max_index_memory_gb = 0
+ibf_fail_on_unsafe_settings = false
+ibf_tuning_report = ""
+ibf_dry_run = false
+
+# Logging; the runner captures stdout/stderr to results/fraglncrna.log
+log_file = ""
+log_level = "info"
+log_to_console = true
+log_per_query = false
+log_per_bin = false
+progress_interval_seconds = 10
+progress_every_queries = 1000
