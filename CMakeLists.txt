@@ -139,6 +139,12 @@ if (BUILD_TESTING)
                     --work-dir ${CMAKE_BINARY_DIR}/real-data-shards)
         set_tests_properties(sharded_ibf_real_data PROPERTIES LABELS "real_data;optional" SKIP_RETURN_CODE 77)
     endif()
+    add_executable(trusted_archive_tests tests/unit/test_trusted_archive.cpp)
+    target_include_directories(trusted_archive_tests PRIVATE src)
+    add_test(NAME trusted_archive_integrity COMMAND trusted_archive_tests)
+    add_test(NAME production_extensions
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_production_extensions.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
     add_test(NAME sharded_ibf
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_sharded_ibf.py
                      $<TARGET_FILE:lncrna_mers_v2>)

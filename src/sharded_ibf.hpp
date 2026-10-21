@@ -2,6 +2,8 @@
 
 // Included after the v2 format-3 archive functions. Kept separate so physical
 // storage cannot accidentally introduce shard-local biological decisions.
+#include "trusted_archive.hpp"
+
 double elapsed(Clock::time_point start);
 std::size_t peak_rss_bytes();
 double observed_ibf_union_estimate(Ibf const &, ReferenceInfo const &, Options const &);
@@ -29,7 +31,7 @@ void plan_shards(Options & o, ReferenceInfo const & info) {
         throw std::runtime_error("Planned resident IBF bytes " + std::to_string(resident) +
             " exceed --ibf-max-index-memory-gb; lower --max-bins-per-ibf or use disk storage");
     // Memory mode must not rely on an unlimited default to exhaust the host.
-    auto available = double(sysconf(_SC_PHYS_PAGES))*sysconf(_SC_PAGESIZE);
+    auto available = double(fraglncrna::memory_limit_bytes());
     if (resident > available*0.5)
         throw std::runtime_error("Planned resident IBF exceeds half physical RAM; lower --max-bins-per-ibf and use sharded disk storage");
     auto destination = o.ibf_layout == "sharded" ? fs::absolute(o.ibf_shard_dir) : fs::absolute(o.output).parent_path();
@@ -92,15 +94,97 @@ class ShardedIbf {
         std::string file, sha, provenance;
         bool owned = false;
         std::unique_ptr<Ibf> memory;
+        std::unique_ptr<TrustedArchive> trusted, local_trusted;
+        std::uint64_t last_use = 0;
     };
     Options const & o_;
     ReferenceInfo & info_;
     std::string bed_sha_, prefix_;
     fs::path dir_;
     ShardDirectoryLock lock_;
+    fs::path local_root_, local_dir_;
+    std::unique_ptr<ShardDirectoryLock> local_lock_;
     std::vector<Shard> shards_;
     std::vector<std::size_t> base_offsets_;
     double guard_bound_ = 0;
+    std::size_t cache_budget_ = 0, cache_bytes_ = 0, resident_peak_ = 1;
+    std::uint64_t cache_clock_ = 0;
+    void make_room(Shard const & x) {
+        if (o_.ibf_shard_storage != "disk") return;
+        auto bytes = planned_index_bytes(x.bins,info_.bin_bits);
+        auto budget = std::max(cache_budget_,bytes);
+        while (cache_bytes_ > budget-bytes) {
+            Shard * oldest = nullptr;
+            for (auto & other : shards_) if (other.memory && (!oldest || other.last_use < oldest->last_use)) oldest = &other;
+            if (!oldest) throw std::runtime_error("Internal cache eviction failure");
+            cache_bytes_ -= planned_index_bytes(oldest->bins,info_.bin_bits);
+            oldest->memory.reset(); ++cache_evictions;
+        }
+    }
+    void retain(Shard & x, std::unique_ptr<Ibf> ibf) {
+        auto bytes = planned_index_bytes(x.bins,info_.bin_bits);
+        if (o_.ibf_shard_storage == "disk" && bytes > cache_budget_) return;
+        if (o_.ibf_shard_storage == "disk") {
+            while (cache_bytes_ > cache_budget_-bytes) {
+                Shard * oldest = nullptr;
+                for (auto & other : shards_) if (other.memory && (!oldest || other.last_use < oldest->last_use)) oldest = &other;
+                if (!oldest) throw std::runtime_error("Internal shard cache accounting failure");
+                cache_bytes_ -= planned_index_bytes(oldest->bins,info_.bin_bits);
+                oldest->memory.reset(); ++cache_evictions;
+            }
+        }
+        x.memory = std::move(ibf); x.last_use = ++cache_clock_; cache_bytes_ += bytes;
+        std::size_t count = 0; for (auto const & other : shards_) count += bool(other.memory);
+        resident_peak_ = std::max(resident_peak_,count);
+        cache_peak_bytes = std::max(cache_peak_bytes,cache_bytes_);
+    }
+    fs::path read_path(Shard const & x) const {
+        return x.local_trusted ? x.local_trusted->pinned_path() : x.trusted->pinned_path();
+    }
+    void check(Shard const & x) const {
+        x.trusted->check(); if (x.local_trusted) x.local_trusted->check();
+    }
+    std::size_t local_used_bytes() const {
+        std::size_t bytes = 0;
+        for (auto const & item : fs::recursive_directory_iterator(local_root_)) {
+            if (item.is_symlink()) throw std::runtime_error("Symlink in local read-cache root refused");
+            if (item.is_regular_file()) {
+                auto count = item.file_size();
+                if (count > std::numeric_limits<std::size_t>::max()-bytes) throw std::runtime_error("Local cache byte counter overflow");
+                bytes += count;
+            }
+        }
+        return bytes;
+    }
+    void stage_local(Shard & x) {
+        if (local_dir_.empty()) return;
+        auto destination = local_dir_/(x.sha+".ibf");
+        if (fs::is_symlink(destination)) throw std::runtime_error("Symlink local read-cache entry refused");
+        if (!fs::exists(destination)) {
+            auto used = local_used_bytes();
+            auto budget = o_.ibf_local_cache_max_mb*1048576;
+            if (x.bytes > budget || used > budget-x.bytes) throw std::runtime_error("Local read-cache byte budget exhausted");
+            if (fs::space(local_dir_).available < x.bytes+1048576) throw std::runtime_error("Insufficient disk space for explicit local index cache");
+            auto temporary = unique_staging_path(destination);
+            try {
+                fs::copy_file(x.trusted->pinned_path(),temporary,fs::copy_options::overwrite_existing);
+                x.trusted->check(); fs::rename(temporary,destination); local_copy_bytes += x.bytes;
+            } catch (...) { std::error_code ignored; fs::remove(temporary,ignored); throw; }
+        }
+        x.local_trusted = std::make_unique<TrustedArchive>(destination);
+        if (x.local_trusted->bytes() != x.bytes || sha256_file(x.local_trusted->pinned_path()) != x.sha)
+            throw std::runtime_error("Local read-cache integrity mismatch; preserve this cache and select a new directory");
+        ++local_checksum_count; check(x);
+    }
+    void trust(Shard & x) {
+        x.trusted = std::make_unique<TrustedArchive>(dir_/x.file);
+        auto started = Clock::now();
+        auto digest = sha256_file(x.trusted->pinned_path());
+        ++checksum_count; checksum_bytes += x.trusted->bytes(); checksum_seconds += elapsed(started);
+        x.trusted->check();
+        if (x.trusted->bytes() != x.bytes || digest != x.sha)
+            throw std::runtime_error("Shard archive size or SHA-256 mismatch: " + x.file);
+    }
 
     ReferenceInfo local_info(Shard const & shard) const {
         ReferenceInfo local = info_;
@@ -216,6 +300,9 @@ class ShardedIbf {
 public:
     std::size_t built = 0, reused = 0, disk_bytes = 0, occupied_bits = 0;
     std::size_t query_loads = 0, query_bytes_read = 0;
+    std::size_t local_copy_bytes = 0, local_checksum_count = 0;
+    std::size_t checksum_count = 0, checksum_bytes = 0, cache_hits = 0, cache_misses = 0, cache_evictions = 0, cache_peak_bytes = 0;
+    double checksum_seconds = 0, first_pass_seconds = 0, selection_seconds = 0, second_pass_seconds = 0;
     double build_seconds = 0, save_seconds = 0, load_seconds = 0, query_load_seconds = 0;
     std::vector<std::size_t> occupancy;
     ShardedIbf(Options const & o, ReferenceInfo & info, std::string bed_sha, RepeatBed const & bed,
@@ -254,7 +341,33 @@ public:
             x.file = "shard-" + std::to_string(shards_.size()) + ".ibf"; shards_.push_back(std::move(x));
             begin += shards_.back().bins;
         }
+        // Bound cache by configured bytes, 1/32 physical RAM, and explicit
+        // resident-index budget. A transient uncached load also fits the cap.
+        auto physical = double(fraglncrna::memory_limit_bytes());
+        cache_budget_ = static_cast<std::size_t>(std::min(double(o.ibf_shard_cache_mb)*1048576,physical/32));
+        if (o.ibf_max_index_memory_gb > 0)
+            cache_budget_ = std::min(cache_budget_,static_cast<std::size_t>(o.ibf_max_index_memory_gb*1e9));
+        fraglncrna::production_log.event("shard-cache","stage_completed","budget_bytes=" + std::to_string(cache_budget_) +
+            " policy=deterministic_LRU integrity=SHA256_once_pinned_descriptor_and_change_stamps");
+        if (dir_.string().starts_with("/mnt/"))
+            fraglncrna::production_log.event("shard-cache","warning","Mounted-volume index IO may be slow under WSL; use an explicitly staged verified index copy on native Linux storage for comparison. Canonical index path is unchanged.",3);
         restore();
+        if (!o.ibf_local_cache_dir.empty()) {
+            if (fs::is_symlink(o.ibf_local_cache_dir)) throw std::runtime_error("Symlink local read-cache directory refused");
+            local_root_ = fs::absolute(o.ibf_local_cache_dir);
+            local_lock_ = std::make_unique<ShardDirectoryLock>(local_root_);
+            local_dir_ = local_root_/sha256_text(prefix_);
+            if (fs::is_symlink(local_dir_)) throw std::runtime_error("Symlink local cache compatibility directory refused");
+            fs::create_directories(local_dir_);
+            auto projected = planned_index_bytes(std::min(o.max_bins_per_ibf,info.bin_count),info.bin_bits)*shards_.size();
+            if (projected > o.ibf_local_cache_max_mb*1048576)
+                throw std::runtime_error("Explicit local read-cache archive set exceeds --ibf-local-cache-max-mb");
+            auto existing = local_used_bytes();
+            if (existing > o.ibf_local_cache_max_mb*1048576)
+                throw std::runtime_error("Existing local cache exceeds byte budget; choose a new cache directory");
+            fraglncrna::production_log.event("shard-cache","stage_started","explicit_local_read_cache=" + local_dir_.string() +
+                " projected_archive_bytes=" + std::to_string(projected) + " canonical_index=" + dir_.string());
+        }
         for (std::size_t id = 0; id < shards_.size(); ++id) {
             fraglncrna::check_stop(); auto & x = shards_[id]; auto path = dir_/x.file;
             if (fs::is_symlink(path)) throw std::runtime_error("Refusing symlink shard archive " + path.string());
@@ -262,12 +375,13 @@ public:
             auto load_before = load_seconds, build_before = build_seconds, save_before = save_seconds;
             std::string outcome = x.sha.empty() ? "built" : "rebuilt";
             std::unique_ptr<Ibf> ibf;
+            make_room(x);
             if (!x.sha.empty() && o.ibf_shard_reuse) {
                 auto started = Clock::now();
                 try {
-                    if (!fs::exists(path) || fs::file_size(path) != x.bytes || sha256_file(path) != x.sha)
-                        throw std::runtime_error("missing archive, size or SHA-256 mismatch");
-                    ibf = load_index_file(path,expected,local,o.ibf_max_index_memory_gb); ++reused; outcome = "reused";
+                    trust(x);
+                    ibf = load_index_file(read_path(x),expected,local,o.ibf_max_index_memory_gb,true);
+                    x.trusted->check(); ++reused; outcome = "reused";
                 } catch (std::exception const & e) {
                     if (!o.ibf_resume) throw;
                     fraglncrna::production_log.event("shard","warning","invalidated shard=" + std::to_string(id) + " reason=" + e.what(),3);
@@ -290,19 +404,29 @@ public:
                 auto flushed = fsync(fd); close(fd);
                 if (flushed) throw std::runtime_error("Cannot flush shard archive");
                 sync_shard_directory(dir_);
+                x.trusted = std::make_unique<TrustedArchive>(path);
+                auto hash_start = Clock::now();
+                x.sha = sha256_file(x.trusted->pinned_path()); x.bytes = x.trusted->bytes();
+                ++checksum_count; checksum_bytes += x.bytes; checksum_seconds += elapsed(hash_start);
+                x.trusted->check();
                 if (o.ibf_shard_storage == "disk")
-                    ibf = load_index_file(path,expected,local,o.ibf_max_index_memory_gb);
+                    // A newly saved file has no trusted manifest digest yet.
+                    // Check its independent embedded payload checksum before
+                    // advertising the freshly computed whole-file digest.
+                    ibf = load_index_file(x.trusted->pinned_path(),expected,local,o.ibf_max_index_memory_gb);
                 else {
                     // Validate durable archive checksums/metadata while retaining
                     // the live built object. Querying never deserializes it again.
-                    std::ifstream archive(path,std::ios::binary);
-                    auto stored = validate_index_archive(path,metadata(x,local),archive);
+                    auto pinned = x.trusted->pinned_path();
+                    std::ifstream archive(pinned,std::ios::binary);
+                    auto stored = validate_index_archive(pinned,metadata(x,local),archive);
                     if (stored.bin_bits != ibf->bin_size() || stored.bin_count != ibf->bin_count())
                         throw std::runtime_error("Saved shard dimensions differ from live built IBF");
                 }
-                x.sha = sha256_file(path); x.bytes = fs::file_size(path); save_seconds += elapsed(started);
+                x.trusted->check(); save_seconds += elapsed(started);
                 ++built; checkpoint();
             }
+            if (!x.local_trusted) stage_local(x);
             auto occupied_before = occupied_bits;
             inspect(x,local,*ibf); disk_bytes += x.bytes;
             fraglncrna::production_log.event("shard","stage_completed","shard=" + std::to_string(id) +
@@ -316,34 +440,31 @@ public:
                 " save_and_validate_seconds=" + std::to_string(save_seconds-save_before) +
                 " bin_bits=" + std::to_string(info.bin_bits) + " padded_bins=" + std::to_string(((x.bins+63)/64)*64) +
                 " peak_RSS=" + std::to_string(peak_rss_bytes()));
-            if (o.ibf_shard_storage == "memory") x.memory = std::move(ibf);
-            if (o.ibf_shard_storage == "disk") {
-                ibf.reset();
-                std::ifstream stat("/proc/self/statm");
-                std::size_t virtual_pages = 0, resident_pages = 0;
-                if (stat >> virtual_pages >> resident_pages)
-                    fraglncrna::production_log.event("shard-release","stage_completed",
-                        "resident_shards=0 current_RSS=" + std::to_string(resident_pages*std::size_t(sysconf(_SC_PAGESIZE))));
-            }
+            retain(x,std::move(ibf));
             // Disk-mode local IBF is destroyed before next allocation.
         }
     }
     fs::path manifest_path() const { return dir_/"manifest.tsv"; }
     std::size_t size() const { return shards_.size(); }
-    std::size_t max_resident() const { return o_.ibf_shard_storage == "memory" ? size() : 1; }
+    std::size_t max_resident() const { return resident_peak_; }
+    std::size_t cache_budget_bytes() const { return cache_budget_; }
+    void check_integrity() const { for (auto const & x : shards_) check(x); }
     double occupancy_union_estimate() const { return std::min(1.0,guard_bound_); }
     std::size_t begin(std::size_t id) const { return shards_.at(id).begin; }
     std::size_t bins(std::size_t id) const { return shards_.at(id).bins; }
     template <typename Fn> void visit(std::size_t id, Fn fn) {
-        auto & x = shards_.at(id);
-        if (x.memory) { fn(*x.memory); return; }
+        auto & x = shards_.at(id); check(x);
+        x.last_use = ++cache_clock_;
+        if (x.memory) { ++cache_hits; fn(*x.memory); check(x); return; }
+        ++cache_misses;
+        make_room(x);
         auto local = local_info(x); auto started = Clock::now();
-        auto path = dir_/x.file;
-        if (fs::is_symlink(path) || sha256_file(path) != x.sha)
-            throw std::runtime_error("Shard changed while querying: " + path.string() + "; resume in the same directory");
-        auto ibf = load_index_file(path,metadata(x,local),local,o_.ibf_max_index_memory_gb);
+        auto ibf = load_index_file(read_path(x),metadata(x,local),local,o_.ibf_max_index_memory_gb,true);
+        check(x);
         query_load_seconds += elapsed(started); ++query_loads; query_bytes_read += x.bytes;
-        fn(*ibf);
+        std::size_t count = 1; for (auto const & other : shards_) count += bool(other.memory);
+        resident_peak_ = std::max(resident_peak_,count);
+        fn(*ibf); check(x); retain(x,std::move(ibf));
     }
     void cleanup_success() {
         if (o_.ibf_shard_retention != "cleanup_on_success") return;

@@ -59,6 +59,9 @@ public:
     std::size_t warnings = 0, errors = 0;
     std::string const & run_id() const { return run_id_; }
     void open(std::filesystem::path const & path, std::string const & level, bool console, double interval) {
+        close();
+        start_ = std::chrono::steady_clock::now(); last_progress_ = start_;
+        warnings = errors = 0; stages_.clear();
         console_ = console; interval_ = interval;
         std::vector<std::string> levels{"trace", "debug", "info", "warning", "error", "off"};
         auto it = std::find(levels.begin(), levels.end(), level);
@@ -69,6 +72,11 @@ public:
         std::filesystem::create_directories(path.parent_path().empty() ? "." : path.parent_path());
         file_.open(path); json_.open(path.string() + ".jsonl");
         if (!file_ || !json_) throw std::runtime_error("Cannot write log " + path.string());
+    }
+    void close() {
+        if (file_.is_open()) file_.close();
+        if (json_.is_open()) json_.close();
+        file_.clear(); json_.clear();
     }
     void event(std::string const & phase, std::string const & event, std::string const & message, int severity = 2) {
         std::lock_guard lock(mutex_);
@@ -125,6 +133,17 @@ inline int available_workers() {
 #endif
     if (auto slurm = std::getenv("SLURM_CPUS_PER_TASK")) cpus = std::min(cpus, std::max(1, std::atoi(slurm)));
     return cpus;
+}
+
+// Effective memory limit includes cgroup-constrained jobs, not just host RAM.
+inline std::size_t memory_limit_bytes() {
+    auto physical = double(sysconf(_SC_PHYS_PAGES))*sysconf(_SC_PAGESIZE);
+    auto limit = static_cast<std::size_t>(physical);
+    std::ifstream control("/sys/fs/cgroup/memory.max"); std::string value;
+    if (control >> value && value != "max") {
+        try { limit = std::min(limit,static_cast<std::size_t>(std::stoull(value))); } catch (...) {}
+    }
+    return limit;
 }
 
 template <typename Function>

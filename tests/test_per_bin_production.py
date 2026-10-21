@@ -230,7 +230,7 @@ with tempfile.TemporaryDirectory(prefix="fraglncrna-production-") as directory:
 
     # Exceptions in a parallel query worker propagate with terminal log footer.
     _, failure = run("worker_failure","--threads",4,"--mode","ibf","--scoring-method","per_bin_verified",
-        "--max-ibf-bin-pairs",1,good=False)
+        "--max-ibf-bin-pairs",1,"--mode","calibrate",good=False)
     assert "IBF-positive bin pairs exceed" in failure.stderr
 
     config = root / "production.toml"

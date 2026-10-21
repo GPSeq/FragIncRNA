@@ -55,7 +55,8 @@ with tempfile.TemporaryDirectory(prefix='frag-shards-') as directory:
                     '--max-bins-per-ibf',cap,'--ibf-shard-dir',index,'--threads','2')
                 assert science(rows) == science(baseline[1]), (mode,scoring,cap)
                 assert m['shard_count'] == (m['global_bin_count']+cap-1)//cap
-                assert m['max_resident_shards'] == 1
+                assert 1 <= m['max_resident_shards'] <= m['shard_count']
+                assert m['shard_cache_peak_bytes'] <= m['ibf_shard_cache_budget_bytes']
                 assert m['physical_occupied_bits_all_modes'] == baseline[2]['physical_occupied_bits_all_modes']
                 for key in ['false_positive_windows','false_negative_windows','false_positive_bin_pairs',
                             'false_negative_bin_pairs','measured_per_bin_fpr','nominal_any_bin_fpr_independent_bins']:

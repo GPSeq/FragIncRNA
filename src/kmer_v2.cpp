@@ -38,6 +38,8 @@
 #include <vector>
 #include <unistd.h>
 #include <sys/file.h>
+#include <sys/stat.h>
+#include <list>
 #include <fcntl.h>
 #include "production_runtime.hpp"
 #include "bloom_sizing.hpp"
@@ -53,10 +55,17 @@ struct Options
 {
     fs::path reference, queries, output, metrics, config_path;
     fs::path positions, calibration_bins, fragments;
+    fs::path reference_dir, output_dir, window_output, kmer_fasta_output, window_query_ids;
+    std::string output_name_template = "results.tsv", window_scope = "all", reference_label;
+    bool reference_recursive = false, continue_on_reference_error = false, window_include_sequence = false, candidate_prefilter = true;
+    std::size_t max_window_rows = 10000000;
+    std::vector<std::string> expanded_arguments;
     fs::path reference_repeat_bed, query_repeat_bed, repeat_classes, reference_hit_classes, exon_blocks;
     fs::path loci_output, expected_loci_bed, expected_loci_output;
     fs::path save_index, load_index, ibf_shard_dir;
     std::string ibf_layout = "single", ibf_shard_storage = "disk", ibf_shard_retention = "keep";
+    std::size_t ibf_shard_cache_mb = 128, reference_page_cache_mb = 64, ibf_local_cache_max_mb = 8192;
+    fs::path ibf_local_cache_dir;
     std::size_t max_bins_per_ibf = 1000, shard_count = 0, global_bin_count = 0;
     std::string index_manifest, manifest_sha256;
     bool layout_given = false, ibf_shard_reuse = true, ibf_resume = true, ibf_build_only = false;
@@ -116,7 +125,7 @@ void load_thresholds(Options & o)
     if (line != "reference_id\tk\tbasic_threshold\tstrict_threshold\ttraining_control_set")
         throw std::runtime_error("Threshold table header must be reference_id, k, basic_threshold, "
                                  "strict_threshold, training_control_set (TSV)");
-    std::string ref_id = reference_id_from_path(o.reference);
+    std::string ref_id = o.reference_label.empty() ? reference_id_from_path(o.reference) : o.reference_label;
     bool selected = false;
     while (std::getline(input, line))
     {
@@ -285,7 +294,7 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     std::size_t line_number = 0;
     auto is_integer = [](std::string const & key)
     {
-        return key == "max_bins_per_ibf" || key == "threads" || key == "progress_every_queries" || key == "k" || key == "fragment_size" || key == "hash_functions" ||
+        return key == "max_window_rows" || key == "ibf_shard_cache_mb" || key == "reference_page_cache_mb" || key == "ibf_local_cache_max_mb" || key == "max_bins_per_ibf" || key == "threads" || key == "progress_every_queries" || key == "k" || key == "fragment_size" || key == "hash_functions" ||
                key == "batch_windows" || key == "local_window" || key == "max_position_rows" ||
                key == "max_calibration_pairs" || key == "max_ibf_bin_pairs" ||
                key == "max_repeat_intervals" || key == "max_exon_blocks" ||
@@ -301,7 +310,9 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     };
     auto is_string = [](std::string const & key)
     {
-        return key == "ibf_layout" || key == "ibf_shard_dir" || key == "ibf_shard_storage" ||
+        return key == "ibf_local_cache_dir" || key == "reference_dir" || key == "output_dir" || key == "output_name_template" ||
+               key == "window_output" || key == "window_scope" || key == "window_query_ids" ||
+               key == "kmer_fasta_output" || key == "reference_id" || key == "ibf_layout" || key == "ibf_shard_dir" || key == "ibf_shard_storage" ||
                key == "ibf_shard_retention" || key == "scoring_method" || key == "ibf_auto_tune" || key == "ibf_tuning_report" ||
                key == "log_file" || key == "log_level" || key == "reference_cache" ||
                key == "reference" || key == "queries" || key == "output" || key == "metrics" ||
@@ -316,7 +327,7 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     };
     auto is_boolean = [](std::string const & key)
     {
-        return key == "ibf_shard_reuse" || key == "ibf_resume" || key == "ibf_build_only" || key == "ibf_fail_on_unsafe_settings" || key == "ibf_dry_run" || key == "log_to_console" ||
+        return key == "candidate_prefilter" || key == "reference_recursive" || key == "continue_on_reference_error" || key == "window_include_sequence" || key == "ibf_shard_reuse" || key == "ibf_resume" || key == "ibf_build_only" || key == "ibf_fail_on_unsafe_settings" || key == "ibf_dry_run" || key == "log_to_console" ||
                key == "log_per_query" || key == "log_per_bin" ||
                key == "fdr_control_per_bin" || key == "per_bin_exact_verify";
     };
@@ -432,6 +443,7 @@ Options parse_options(int argc, char ** argv)
         auto config_args = load_v2_config_args(o.config_path);
         args.insert(args.begin() + 1, config_args.begin(), config_args.end());
     }
+    o.expanded_arguments = args;
     for (std::size_t i = 1; i < args.size(); ++i)
     {
         std::string key = args[i];
@@ -467,6 +479,12 @@ Options parse_options(int argc, char ** argv)
                          "[--ibf-shard-reuse | --no-ibf-shard-reuse] [--ibf-resume | --no-ibf-resume] [--ibf-build-only] "
                          "[--save-index INDEX.ibf | --load-index INDEX.ibf] "
                          "[--metrics OUT.json] [--scoring-method global_ibf|per_bin_ibf|per_bin_verified|global_exact] "
+                         "[--reference-dir DIR --output-dir DIR] [--output-name-template results.tsv] "
+                         "[--reference-recursive] [--continue-on-reference-error] "
+                         "[--window-output FILE.tsv[.gz]] [--window-scope all|verified|candidate|failed] "
+                         "[--window-query-ids FILE] [--window-include-sequence] [--kmer-fasta-output FILE.fa[.gz]] "
+                         "[--max-window-rows 10000000] [--ibf-shard-cache-mb 128] [--reference-page-cache-mb 64] "
+                         "[--mode export-kmers --queries FILE --window-output FILE] "
                          "[--threads 1] [--reference-cache BASES.bin] "
                          "[--ibf-auto-tune off|recommend|apply] [--ibf-max-index-memory-gb 0] "
                          "[--ibf-fail-on-unsafe-settings] [--ibf-dry-run] [--ibf-tuning-report FILE.json] "
@@ -475,6 +493,14 @@ Options parse_options(int argc, char ** argv)
                          "[--progress-every-queries 1000] [--log-per-query] [--log-per-bin]\n";
             std::exit(0);
         }
+        if (key == "--candidate-prefilter") { o.candidate_prefilter = true; continue; }
+        if (key == "--no-candidate-prefilter") { o.candidate_prefilter = false; continue; }
+        if (key == "--reference-recursive") { o.reference_recursive = true; continue; }
+        if (key == "--no-reference-recursive") { o.reference_recursive = false; continue; }
+        if (key == "--continue-on-reference-error") { o.continue_on_reference_error = true; continue; }
+        if (key == "--no-continue-on-reference-error") { o.continue_on_reference_error = false; continue; }
+        if (key == "--window-include-sequence") { o.window_include_sequence = true; continue; }
+        if (key == "--no-window-include-sequence") { o.window_include_sequence = false; continue; }
         if (key == "--ibf-build-only") { o.ibf_build_only = true; continue; }
         if (key == "--no-ibf-build-only") { o.ibf_build_only = false; continue; }
         if (key == "--ibf-shard-reuse") { o.ibf_shard_reuse = true; continue; }
@@ -498,6 +524,15 @@ Options parse_options(int argc, char ** argv)
         if (i + 1 >= args.size()) throw std::runtime_error("Missing value for " + key);
         std::string value = args[++i];
         if (key == "--reference") o.reference = value;
+        else if (key == "--reference-dir") o.reference_dir = value;
+        else if (key == "--reference-id") o.reference_label = value;
+        else if (key == "--output-dir") o.output_dir = value;
+        else if (key == "--output-name-template") o.output_name_template = value;
+        else if (key == "--window-output") o.window_output = value;
+        else if (key == "--window-scope") o.window_scope = value;
+        else if (key == "--window-query-ids") o.window_query_ids = value;
+        else if (key == "--kmer-fasta-output") o.kmer_fasta_output = value;
+        else if (key == "--max-window-rows") o.max_window_rows = parse_size(value,key);
         else if (key == "--queries") o.queries = value;
         else if (key == "--output") o.output = value;
         else if (key == "--metrics") o.metrics = value;
@@ -513,6 +548,10 @@ Options parse_options(int argc, char ** argv)
         else if (key == "--expected-loci-bed") o.expected_loci_bed = value;
         else if (key == "--expected-loci-output") o.expected_loci_output = value;
         else if (key == "--ibf-layout") { o.ibf_layout = value; o.layout_given = true; }
+        else if (key == "--ibf-local-cache-dir") o.ibf_local_cache_dir = value;
+        else if (key == "--ibf-local-cache-max-mb") o.ibf_local_cache_max_mb = parse_size(value,key);
+        else if (key == "--ibf-shard-cache-mb") o.ibf_shard_cache_mb = parse_size(value,key);
+        else if (key == "--reference-page-cache-mb") o.reference_page_cache_mb = parse_size(value,key);
         else if (key == "--max-bins-per-ibf") o.max_bins_per_ibf = parse_size(value,key);
         else if (key == "--ibf-shard-dir") o.ibf_shard_dir = value;
         else if (key == "--ibf-shard-storage") o.ibf_shard_storage = value;
@@ -562,8 +601,25 @@ Options parse_options(int argc, char ** argv)
         else if (key == "--mode") o.mode = value;
         else throw std::runtime_error("Unknown option: " + key);
     }
-    if (o.reference.empty() || o.queries.empty() || o.output.empty())
-        throw std::runtime_error("--reference, --queries, and --output are required");
+    if (!o.reference.empty() && !o.reference_dir.empty())
+        throw std::runtime_error("--reference and --reference-dir are mutually exclusive");
+    if (!o.reference_dir.empty() && (!o.output.empty() || o.output_dir.empty()))
+        throw std::runtime_error("--reference-dir requires --output-dir and no --output");
+    if (o.reference_dir.empty() && !o.output_dir.empty()) throw std::runtime_error("--output-dir requires --reference-dir");
+    if (o.mode == "export-kmers") {
+        if (!o.reference.empty() || !o.reference_dir.empty() || !o.output.empty() || o.queries.empty() ||
+            (o.window_output.empty() && o.kmer_fasta_output.empty()))
+            throw std::runtime_error("export-kmers requires --queries and --window-output and/or --kmer-fasta-output, without reference/output");
+        if (o.window_scope != "all") throw std::runtime_error("export-kmers supports window_scope=all and optional query-ID filtering; genomic scopes require a reference run");
+    } else if (o.queries.empty() || (o.reference_dir.empty() && (o.reference.empty() || o.output.empty())))
+        throw std::runtime_error("--reference, --queries, and --output are required (or --reference-dir with --output-dir)");
+    if (o.window_scope != "all" && o.window_scope != "verified" && o.window_scope != "candidate" && o.window_scope != "failed")
+        throw std::runtime_error("Invalid --window-scope (all/verified/candidate/failed)");
+    if (!o.max_window_rows) throw std::runtime_error("--max-window-rows must be positive");
+    if (o.reference_label.find_first_of("\t\r\n") != std::string::npos) throw std::runtime_error("Invalid reference ID");
+    constexpr auto max_cache_mb = std::numeric_limits<std::size_t>::max()/1048576;
+    if (o.ibf_shard_cache_mb > max_cache_mb || o.reference_page_cache_mb > max_cache_mb || o.ibf_local_cache_max_mb > max_cache_mb)
+        throw std::runtime_error("Cache size overflow");
     if (o.k < 1 || o.k > 32 || o.fragment_size < o.k || o.hash_functions < 1 ||
         o.hash_functions > 5 || o.batch_windows < 1 || o.max_position_rows < 1 ||
         o.max_calibration_pairs < 1 || o.max_ibf_bin_pairs < 1 ||
@@ -585,12 +641,14 @@ Options parse_options(int argc, char ** argv)
         throw std::runtime_error("--repeat-classes requires --repeat annotate");
     if (!o.reference_hit_classes.empty() && o.repeat != "annotate")
         throw std::runtime_error("--reference-hit-classes requires --repeat annotate");
-    if (o.mode != "ibf" && o.mode != "exact" && o.mode != "validate" && o.mode != "calibrate")
+    if (o.mode != "ibf" && o.mode != "exact" && o.mode != "validate" && o.mode != "calibrate" && o.mode != "export-kmers")
         throw std::runtime_error("Invalid --mode");
     if (!o.max_bins_per_ibf || o.max_bins_per_ibf > std::numeric_limits<std::size_t>::max()-63)
         throw std::runtime_error("--max-bins-per-ibf must be positive and leave room for physical bin padding");
     if (o.ibf_layout != "single" && o.ibf_layout != "sharded" && o.ibf_layout != "auto")
         throw std::runtime_error("Invalid --ibf-layout (single/sharded/auto)");
+    if (!o.ibf_local_cache_dir.empty() && (!o.ibf_local_cache_max_mb || o.ibf_layout == "single"))
+        throw std::runtime_error("Local read cache requires sharded/auto layout and a positive --ibf-local-cache-max-mb");
     if (o.ibf_shard_storage != "disk" && o.ibf_shard_storage != "memory")
         throw std::runtime_error("Invalid --ibf-shard-storage (disk/memory)");
     if (o.ibf_shard_retention != "keep" && o.ibf_shard_retention != "cleanup_on_success")
@@ -609,7 +667,7 @@ Options parse_options(int argc, char ** argv)
     if (o.layout_given && o.ibf_layout != "single" && o.mode == "ibf" && !o.explicit_scoring && !o.fdr_control_per_bin && !o.fdr_option_given) {
         o.scoring_method = o.per_bin_exact_verify ? "per_bin_verified" : "per_bin_ibf"; o.explicit_scoring = true;
     }
-    if (o.ibf_shard_dir.empty()) o.ibf_shard_dir = o.output.string() + ".ibf-shards";
+    if (o.ibf_shard_dir.empty() && o.reference_dir.empty()) o.ibf_shard_dir = o.output.string() + ".ibf-shards";
     o.legacy_global_budget = !o.explicit_scoring && !o.auto_tune_given && o.mode == "ibf" && !o.fdr_control_per_bin;
     if (o.explicit_scoring && o.scoring_method != "global_ibf" && o.scoring_method != "per_bin_ibf" &&
         o.scoring_method != "per_bin_verified" && o.scoring_method != "global_exact")
@@ -661,8 +719,9 @@ Options parse_options(int argc, char ** argv)
         throw std::runtime_error("--local-window must be at least k");
     if (o.evaluation_control_set.find_first_of("\t\r\n") != std::string::npos)
         throw std::runtime_error("Invalid evaluation control-set label");
-    load_thresholds(o);
     o.requested_per_bin_fpr = o.fpr;
+    if (!o.reference_dir.empty()) return o;
+    if (o.mode != "export-kmers") load_thresholds(o);
     if (o.metrics.empty()) o.metrics = o.output.string() + ".metrics.json";
     if (o.log_file.empty()) o.log_file = o.output.string() + ".log";
     if (o.ibf_tuning_report.empty()) o.ibf_tuning_report = o.output.string() + ".ibf_tuning.json";
@@ -672,15 +731,17 @@ Options parse_options(int argc, char ** argv)
         o.expected_loci_output = o.output.string() + ".expected_loci.tsv";
     if (o.fdr_control_per_bin && o.per_bin_output.empty())
         o.per_bin_output = o.output.string() + ".per_bin.tsv";
-    std::vector<fs::path> inputs{o.reference, o.queries}, outputs{o.output, o.metrics, o.log_file,
-        o.log_file.string() + ".jsonl", o.ibf_tuning_report};
+    std::vector<fs::path> inputs{o.queries}, outputs;
+    if (!o.reference.empty()) inputs.push_back(o.reference);
+    if (o.mode != "export-kmers") outputs = {o.output,o.metrics,o.log_file,o.log_file.string()+".jsonl",o.ibf_tuning_report};
+    if (!o.window_query_ids.empty()) inputs.push_back(o.window_query_ids);
     if (!o.reference_cache.empty()) outputs.push_back(o.reference_cache);
     if (!o.config_path.empty()) inputs.push_back(o.config_path);
     for (auto const & input : {o.reference_repeat_bed, o.query_repeat_bed, o.exon_blocks, o.expected_loci_bed,
                               o.threshold_table,
                               o.load_index})
         if (!input.empty()) inputs.push_back(input);
-    for (auto const & output : {o.positions, o.calibration_bins, o.fragments, o.repeat_classes,
+    for (auto const & output : {o.window_output, o.kmer_fasta_output, o.positions, o.calibration_bins, o.fragments, o.repeat_classes,
                                o.reference_hit_classes, o.loci_output,
                                o.expected_loci_output, o.save_index, o.per_bin_output})
         if (!output.empty()) outputs.push_back(output);
@@ -700,6 +761,11 @@ Options parse_options(int argc, char ** argv)
     }
     if (o.ibf_layout != "single") {
         auto directory = fs::weakly_canonical(fs::absolute(o.ibf_shard_dir));
+        if (!o.ibf_local_cache_dir.empty()) {
+            auto cache = fs::weakly_canonical(fs::absolute(o.ibf_local_cache_dir));
+            auto relative = cache.lexically_relative(directory);
+            if (!relative.empty() && *relative.begin() != "..") throw std::runtime_error("Local read cache must be outside the canonical shard directory");
+        }
         for (auto const & output : outputs) {
             auto absolute = fs::weakly_canonical(fs::absolute(output));
             auto relative = absolute.lexically_relative(directory);
@@ -714,7 +780,11 @@ Options parse_options(int argc, char ** argv)
 class ByteReader
 {
 public:
-    explicit ByteReader(fs::path const & path) : gzip_{path.extension() == ".gz"}
+    explicit ByteReader(fs::path const & path) : gzip_{[] (fs::path const & p) {
+        auto extension = p.extension().string();
+        for (char & c : extension) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return extension == ".gz";
+    }(path)}
     {
         if (gzip_)
         {
@@ -911,7 +981,7 @@ class WindowMaker
 {
 public:
     explicit WindowMaker(Options const & o, bool exclude_here) : o_{o}, exclude_here_{exclude_here}, core_{o.k} {}
-    void reset() { codes_.clear(); masked_ = 0; core_.reset(); }
+    void reset() { codes_.clear(); masked_ = 0; repeat_bits_ = 0; core_.reset(); }
     std::optional<Window> push(char c, uint32_t bed_class = 0)
     {
         if (fraglncrna::dna_code(c) < 0 && o_.ambiguity == "error")
@@ -919,6 +989,15 @@ public:
         auto core = core_.push(c);
         bool softmask = c >= 'a' && c <= 'z';
         bool repeat = softmask || bed_class != 0;
+        // Include/exclude need a rolling repeat-presence bit, not a deque
+        // walk to identify repeat classes that are never reported in these
+        // modes. k <= 32, so this exact rolling mask fits in uint64_t.
+        repeat_bits_ = ((repeat_bits_ << 1) | uint64_t(repeat)) & ((uint64_t{1} << o_.k)-1);
+        if (o_.repeat != "annotate") {
+            if (!core) return std::nullopt;
+            return Window{core->forward,core->reverse,core->valid && (!exclude_here_ || !repeat_bits_),
+                          repeat_bits_ != 0,core->valid,0};
+        }
         if (codes_.size() == o_.k)
         {
             masked_ -= codes_.front().repeat;
@@ -944,6 +1023,7 @@ private:
     fraglncrna::RollingDnaWindow core_;
     std::deque<BaseTag> codes_;
     std::size_t masked_ = 0;
+    uint64_t repeat_bits_ = 0;
 };
 
 uint64_t index_key(Window const & w, Options const & o)
@@ -1297,7 +1377,7 @@ void save_index_file(fs::path const & path, IndexMetadata const & meta, Ibf cons
 }
 
 IndexMetadata validate_index_archive(fs::path const & path, IndexMetadata const & expected,
-                                     std::ifstream & input)
+                                     std::ifstream & input, bool verify_payload = true)
 {
     if (!input) throw std::runtime_error("Cannot open index " + path.string());
     std::string magic(index_magic.size(), '\0');
@@ -1320,7 +1400,7 @@ IndexMetadata validate_index_archive(fs::path const & path, IndexMetadata const 
     input.read(expected_payload_sha.data(), 64);
     if (!input) throw std::runtime_error("Truncated index payload checksum");
     std::uint64_t payload_offset = index_magic.size() + sizeof(header_size) + 64 + header_size + 64;
-    if (sha256_file(path, payload_offset) != expected_payload_sha)
+    if (verify_payload && sha256_file(path, payload_offset) != expected_payload_sha)
         throw std::runtime_error("Index payload checksum mismatch");
     std::istringstream header_input(header, std::ios::in | std::ios::binary);
     IndexMetadata stored;
@@ -1330,10 +1410,10 @@ IndexMetadata validate_index_archive(fs::path const & path, IndexMetadata const 
 }
 
 std::unique_ptr<Ibf> load_index_file(fs::path const & path, IndexMetadata const & expected,
-                                     ReferenceInfo & info, double max_index_memory_gb)
+                                     ReferenceInfo & info, double max_index_memory_gb, bool trusted_archive = false)
 {
     std::ifstream input(path, std::ios::binary);
-    auto stored = validate_index_archive(path,expected,input);
+    auto stored = validate_index_archive(path,expected,input,!trusted_archive);
     auto stored_bytes = planned_index_bytes(stored.bin_count,stored.bin_bits);
     if (max_index_memory_gb > 0 && double(stored_bytes) > max_index_memory_gb*1e9)
         throw std::runtime_error("Loaded archive layout exceeds --ibf-max-index-memory-gb; use a larger budget or explicitly rebuild a smaller index");
@@ -1407,9 +1487,11 @@ struct PerBinRegion
 
 struct Query
 {
-    std::string id;
+    std::string id, report_sequence;
     std::size_t index = 0, total_windows = 0, valid_windows = 0, base_valid_windows = 0, repeat_windows = 0;
-    std::size_t positive_bin_pairs = 0;
+    std::uint64_t positive_bin_pairs = 0;
+    std::vector<std::size_t> unique_windows, window_to_unique, unique_multiplicity;
+    std::vector<std::size_t> calibration_offsets, calibration_occurrences;
     std::vector<Window> windows;
     std::vector<std::size_t> bin_hits;
     std::vector<std::vector<std::size_t>> positive_bins;
@@ -1437,6 +1519,10 @@ struct ExactResult
     std::vector<std::size_t> per_bin_candidate_union_windows;
     std::vector<std::vector<uint64_t>> candidate_window_masks;
     std::size_t candidate_reference_bases = 0, candidate_interval_reads = 0;
+    double candidate_grouping_seconds = 0;
+    std::size_t verification_prefilter_rejections = 0, verifier_full_key_lookups = 0;
+    std::size_t candidate_unique_start_bases = 0, candidate_logical_requested_bases = 0, candidate_unique_intervals = 0;
+    std::vector<std::vector<std::size_t>> candidate_region_matches;
     std::size_t whole_reference_bases = 0;
     std::size_t candidate_cache_hits = 0, candidate_cache_insertions = 0;
 };
@@ -1494,6 +1580,8 @@ private:
     std::ofstream file_;
 };
 
+#include "window_report.hpp"
+
 std::size_t count_bins(Ibf::membership_agent_type & agent, Window const & w, Options const & o)
 {
     auto const & first = agent.bulk_contains(index_key(w, o));
@@ -1525,6 +1613,7 @@ Query make_query(std::string id, std::size_t index, std::string const & sequence
 {
     Query q;
     q.id = std::move(id);
+    if (o.window_include_sequence || !o.kmer_fasta_output.empty()) q.report_sequence = sequence;
     q.index = index;
     WindowMaker maker{o, o.repeat == "exclude" && o.mask_target != "reference"};
     BedCursor bed{query_bed};
@@ -1549,16 +1638,39 @@ Query make_query(std::string id, std::size_t index, std::string const & sequence
             auto hits = w->valid && agent ? positive_bins(*agent, *w, o)
                                           : std::vector<std::size_t>{};
             q.bin_hits.push_back(hits.size());
-            if (q.bin_hits.back() > o.max_ibf_bin_pairs - q.positive_bin_pairs)
-                throw std::runtime_error("IBF-positive bin pairs exceed --max-ibf-bin-pairs for one query; "
-                                         "reduce --batch-windows or raise the explicit cap");
+            if (q.bin_hits.back() > std::numeric_limits<std::uint64_t>::max()-q.positive_bin_pairs)
+                throw std::runtime_error("Logical IBF pair counter overflow query=" + q.id);
             q.positive_bin_pairs += q.bin_hits.back();
+            if (o.mode == "calibrate" && q.positive_bin_pairs > o.max_ibf_bin_pairs)
+                throw std::runtime_error("IBF-positive bin pairs exceed --max-ibf-bin-pairs for calibration query=" + q.id);
             if (o.fdr_control_per_bin)
                 for (std::size_t bin : hits) ++q.per_bin_counts[bin];
             if (o.mode == "calibrate") q.positive_bins.push_back(std::move(hits));
         }
-        else q.bin_hits.push_back(w->valid && agent ? count_bins(*agent, *w, o) : 0);
+        else {
+            auto count = w->valid && agent ? count_bins(*agent,*w,o) : 0;
+            if (count > std::numeric_limits<std::uint64_t>::max()-q.positive_bin_pairs)
+                throw std::runtime_error("Logical IBF pair overflow query=" + q.id);
+            q.positive_bin_pairs += count; q.bin_hits.push_back(count);
+        }
         q.windows.push_back(*w);
+    }
+    if (!ibf && o.mode != "exact" && o.mode != "export-kmers") {
+        std::unordered_map<uint64_t,std::size_t> groups;
+        q.window_to_unique.assign(q.windows.size(),std::numeric_limits<std::size_t>::max());
+        for (std::size_t wi = 0; wi < q.windows.size(); ++wi) if (q.windows[wi].valid) {
+            auto [it,inserted] = groups.try_emplace(index_key(q.windows[wi],o),q.unique_windows.size());
+            if (inserted) { q.unique_windows.push_back(wi); q.unique_multiplicity.push_back(0); }
+            q.window_to_unique[wi] = it->second; ++q.unique_multiplicity[it->second];
+        }
+        if (o.mode == "calibrate") {
+            q.calibration_offsets.push_back(0);
+            for (auto count : q.unique_multiplicity) q.calibration_offsets.push_back(q.calibration_offsets.back()+count);
+            q.calibration_occurrences.resize(q.valid_windows);
+            auto cursor = q.calibration_offsets;
+            for (std::size_t wi = 0; wi < q.windows.size(); ++wi) if (q.windows[wi].valid)
+                q.calibration_occurrences[cursor[q.window_to_unique[wi]]++] = wi;
+        }
     }
     return q;
 }
@@ -1769,12 +1881,16 @@ struct Totals
     std::size_t per_bin_candidate_regions = 0, per_bin_verified_regions = 0;
     std::size_t per_bin_rejected_regions = 0, per_bin_missed_exact_queries = 0;
     std::size_t per_bin_exact_windows_outside_candidates = 0, per_bin_top_k_dropped = 0;
-    double query_seconds = 0, exact_seconds = 0, result_seconds = 0;
+    double query_seconds = 0, query_encoding_seconds = 0, candidate_grouping_seconds = 0, exact_seconds = 0, result_seconds = 0;
+    std::uint64_t logical_ibf_pairs = 0;
+    std::size_t unique_query_lookup_keys = 0;
     double candidate_selection_seconds = 0, candidate_verification_seconds = 0;
     double per_bin_comparison_seconds = 0;
     std::size_t candidate_reference_bases = 0, candidate_interval_reads = 0, global_reference_scans = 0, batches = 0;
     std::size_t whole_reference_bases_visited = 0;
     std::size_t candidate_cache_hits = 0, candidate_cache_insertions = 0;
+    std::size_t candidate_unique_start_bases = 0, candidate_logical_requested_bases = 0, candidate_unique_intervals = 0;
+    std::size_t verification_prefilter_rejections = 0, verifier_full_key_lookups = 0;
     std::size_t candidate_false_negative_windows = 0;
     std::map<std::string,std::size_t> status_counts;
 };
@@ -2435,6 +2551,7 @@ double observed_ibf_union_estimate(Ibf const & ibf, ReferenceInfo const & info, 
 int run(Options o)
 {
     auto run_start = Clock::now();
+    bool transactional_outputs = schema3(o) || !o.window_output.empty() || !o.kmer_fasta_output.empty();
     using fraglncrna::production_log;
     production_log.open(o.log_file,o.log_level,o.log_to_console,o.progress_interval_seconds);
     std::signal(SIGTERM,fraglncrna::request_stop);
@@ -2477,7 +2594,7 @@ int run(Options o)
     std::unique_ptr<IndexedReference> reference_access;
     if (((o.fdr_control_per_bin && o.per_bin_exact_verify) || o.ibf_layout != "single") && o.mode != "exact" && !o.ibf_dry_run) {
         production_log.event("reference-cache","stage_started","preprocessing original bases once; candidate verifier uses random access");
-        reference_access = std::make_unique<IndexedReference>(o.reference_cache);
+        reference_access = std::make_unique<IndexedReference>(o.reference_cache,o.reference_page_cache_mb);
     }
     ReferenceInfo info = inspect_reference(o, reference_bed,reference_access.get());
     if (reference_access) reference_access->finish();
@@ -2594,7 +2711,7 @@ int run(Options o)
     std::size_t fragment_peak = peak_rss_bytes();
 
     fs::create_directories(o.output.parent_path().empty() ? fs::path{"."} : o.output.parent_path());
-    fs::path staged_output = schema3(o) ? unique_staging_path(o.output) : o.output;
+    fs::path staged_output = transactional_outputs ? unique_staging_path(o.output) : o.output;
     std::ofstream out(staged_output);
     if (!out) throw std::runtime_error("Cannot write " + o.output.string());
     out << "schema_version\tquery_index\tquery_id\treference_id\tk\ttotal_windows\tvalid_windows\tinvalid_windows"
@@ -2692,10 +2809,11 @@ int run(Options o)
         expected_file << "schema_version\tquery_index\tquery_id\treference_id\tcontig\tstart\tend"
                          "\tlabel\tvalid_query_windows\tmatched_windows\tlocus_recovery\texact_occurrences\n";
     }
-    std::string ref_id = reference_id_from_path(o.reference);
+    std::string ref_id = o.reference_label.empty() ? reference_id_from_path(o.reference) : o.reference_label;
     ExonBlocks exon_blocks = load_exon_blocks(o, info);
     ExpectedLoci expected_loci = load_expected_loci(o, info);
 
+    WindowReport window_report{o};
     Totals totals;
     if (o.mode == "calibrate" || (o.mode == "validate" && o.fdr_control_per_bin))
     {
@@ -2731,7 +2849,9 @@ int run(Options o)
                 batch[qi] = make_query(raw.id,raw.index,raw.sequence,o,ibf.get(),query_bed);
                 std::string{}.swap(raw.sequence);
             });
-            totals.query_seconds += elapsed(membership_start);
+            auto preparation_seconds = elapsed(membership_start);
+            totals.query_seconds += preparation_seconds;
+            if (!ibf) totals.query_encoding_seconds += preparation_seconds;
             auto selection_start = Clock::now();
             fraglncrna::parallel_records(count,static_cast<int>(o.actual_threads),[&](std::size_t offset) {
                 if (!shards) prepare_per_bin_query(batch[base+offset],o,info,ibf.get());
@@ -2742,8 +2862,30 @@ int run(Options o)
         pending.clear();
         if (shards) {
             auto membership_start = Clock::now();
+            auto previous_selection = shards->selection_seconds;
             query_shards(*shards,batch,o,info);
+            totals.candidate_selection_seconds += shards->selection_seconds-previous_selection;
             totals.query_seconds += elapsed(membership_start);
+        }
+        {
+            std::size_t valid = 0, unique = 0, before = 0, selected = 0, regions = 0;
+            std::uint64_t logical_pairs = 0;
+            for (auto const & q : batch) {
+                valid += q.valid_windows; unique += q.unique_windows.size();
+                if (q.positive_bin_pairs > std::numeric_limits<std::uint64_t>::max()-logical_pairs)
+                    throw std::runtime_error("Block logical-pair counter overflow");
+                logical_pairs += q.positive_bin_pairs; before += q.candidate_bins_before_top_k;
+                selected += q.per_bin_candidates.size(); regions += q.per_bin_regions.size();
+            }
+            if (logical_pairs > std::numeric_limits<std::uint64_t>::max()-totals.logical_ibf_pairs)
+                throw std::runtime_error("Run logical-pair counter overflow");
+            totals.logical_ibf_pairs += logical_pairs; totals.unique_query_lookup_keys += unique;
+            production_log.event("query-block","stage_completed","queries=" + std::to_string(batch.size()) +
+                " valid_windows=" + std::to_string(valid) + " unique_lookup_keys=" + std::to_string(unique) +
+                " logical_pairs=" + std::to_string(logical_pairs) + " candidates_before_top_k=" + std::to_string(before) +
+                " selected_bins=" + std::to_string(selected) + " candidate_regions=" + std::to_string(regions) +
+                " shard_cache_hits=" + std::to_string(shards ? shards->cache_hits : 0) +
+                " shard_loads=" + std::to_string(shards ? shards->query_loads : 0) + " peak_RSS=" + std::to_string(peak_rss_bytes()));
         }
         auto prepared = std::move(batch);
         std::size_t from = 0;
@@ -2782,6 +2924,12 @@ int run(Options o)
             verify_candidate_intervals(o,info,reference_bed,batch,*reference_access,exact_result);
             totals.candidate_verification_seconds += elapsed(t);
             totals.candidate_reference_bases += exact_result.candidate_reference_bases;
+            totals.candidate_grouping_seconds += exact_result.candidate_grouping_seconds;
+            totals.verification_prefilter_rejections += exact_result.verification_prefilter_rejections;
+            totals.verifier_full_key_lookups += exact_result.verifier_full_key_lookups;
+            totals.candidate_unique_start_bases += exact_result.candidate_unique_start_bases;
+            totals.candidate_logical_requested_bases += exact_result.candidate_logical_requested_bases;
+            totals.candidate_unique_intervals += exact_result.candidate_unique_intervals;
             totals.candidate_interval_reads += exact_result.candidate_interval_reads;
             totals.candidate_cache_hits += exact_result.candidate_cache_hits;
             totals.candidate_cache_insertions += exact_result.candidate_cache_insertions;
@@ -2797,6 +2945,7 @@ int run(Options o)
                     expected_file.is_open() ? &expected_file : nullptr, expected_loci,
                     per_bin_file.is_open() ? &per_bin_file : nullptr,
                     per_bin_candidates_file.is_open() ? &per_bin_candidates_file : nullptr);
+        window_report.write(ref_id,batch,exact_result);
         totals.result_seconds += elapsed(t);
         production_log.progress("query","completed=" + std::to_string(totals.queries) +
             " valid_windows=" + std::to_string(totals.valid) + " batches=" + std::to_string(totals.batches) +
@@ -2944,7 +3093,7 @@ int run(Options o)
         if (!bins_out) throw std::runtime_error("Failed writing calibration bins");
     }
     fs::create_directories(o.metrics.parent_path().empty() ? fs::path{"."} : o.metrics.parent_path());
-    fs::path staged_metrics = schema3(o) ? unique_staging_path(o.metrics) : o.metrics;
+    fs::path staged_metrics = transactional_outputs ? unique_staging_path(o.metrics) : o.metrics;
     std::ofstream metrics(staged_metrics);
     if (!metrics) throw std::runtime_error("Cannot write metrics JSON");
     rusage cpu_usage{}; getrusage(RUSAGE_SELF,&cpu_usage);
@@ -3167,6 +3316,41 @@ int run(Options o)
         << ",\n\"candidate_exact_verification\":" << (o.fdr_control_per_bin && o.per_bin_exact_verify ? "true" : "false")
         << ",\n\"shards_built\":" << (shards ? shards->built : 0)
         << ",\n\"shards_reused\":" << (shards ? shards->reused : 0)
+        << ",\n\"window_output\":" << json_string(o.window_output.string())
+        << ",\n\"window_scope\":" << json_string(o.window_scope)
+        << ",\n\"window_rows\":" << window_report.rows()
+        << ",\n\"kmer_fasta_output\":" << json_string(o.kmer_fasta_output.string())
+        << ",\n\"canonical_kmer_encoding\":\"dna2bit-v1; A=0,C=1,G=2,T=3; MSB-first; min(forward,reverse_complement); hex; k explicit\""
+        << ",\n\"candidate_prefilter\":" << (o.candidate_prefilter ? "true" : "false")
+        << ",\n\"verification_prefilter_rejections\":" << totals.verification_prefilter_rejections
+        << ",\n\"verifier_full_key_lookups\":" << totals.verifier_full_key_lookups
+        << ",\n\"logical_ibf_positive_pairs\":" << totals.logical_ibf_pairs
+        << ",\n\"unique_query_lookup_keys\":" << totals.unique_query_lookup_keys
+        << ",\n\"query_encoding_seconds\":" << (ibf ? "null" : std::to_string(totals.query_encoding_seconds))
+        << ",\n\"candidate_interval_grouping_seconds\":" << totals.candidate_grouping_seconds
+        << ",\n\"candidate_reference_read_seconds\":" << (reference_access ? reference_access->read_seconds() : 0)
+        << ",\n\"reference_page_cache_lock_wait_seconds\":" << (reference_access ? reference_access->lock_wait_seconds() : 0)
+        << ",\n\"candidate_reference_userspace_read_bytes\":" << (reference_access ? reference_access->read_bytes() : 0)
+        << ",\n\"reference_page_cache_hits\":" << (reference_access ? reference_access->page_hits() : 0)
+        << ",\n\"reference_page_cache_misses\":" << (reference_access ? reference_access->page_misses() : 0)
+        << ",\n\"reference_page_cache_budget_bytes\":" << (reference_access ? reference_access->page_cache_bytes() : 0)
+        << ",\n\"candidate_unique_start_bases\":" << totals.candidate_unique_start_bases
+        << ",\n\"candidate_logical_requested_bases\":" << totals.candidate_logical_requested_bases
+        << ",\n\"candidate_unique_intervals\":" << totals.candidate_unique_intervals
+        << ",\n\"ibf_local_cache_directory\":" << json_string(o.ibf_local_cache_dir.string())
+        << ",\n\"shard_local_cache_copied_bytes\":" << (shards ? shards->local_copy_bytes : 0)
+        << ",\n\"shard_local_cache_checksum_count\":" << (shards ? shards->local_checksum_count : 0)
+        << ",\n\"ibf_shard_cache_budget_bytes\":" << (shards ? shards->cache_budget_bytes() : 0)
+        << ",\n\"shard_cache_hits\":" << (shards ? shards->cache_hits : 0)
+        << ",\n\"shard_cache_misses\":" << (shards ? shards->cache_misses : 0)
+        << ",\n\"shard_cache_evictions\":" << (shards ? shards->cache_evictions : 0)
+        << ",\n\"shard_cache_peak_bytes\":" << (shards ? shards->cache_peak_bytes : 0)
+        << ",\n\"shard_checksum_count\":" << (shards ? shards->checksum_count : 0)
+        << ",\n\"shard_checksum_bytes\":" << (shards ? shards->checksum_bytes : 0)
+        << ",\n\"shard_checksum_seconds\":" << (shards ? shards->checksum_seconds : 0)
+        << ",\n\"shard_first_pass_seconds\":" << (shards ? shards->first_pass_seconds : 0)
+        << ",\n\"shard_global_selection_seconds\":" << (shards ? shards->selection_seconds : 0)
+        << ",\n\"shard_second_pass_seconds\":" << (shards ? shards->second_pass_seconds : 0)
         << ",\n\"shard_query_loads\":" << (shards ? shards->query_loads : 0)
         << ",\n\"shard_query_bytes_read\":" << (shards ? shards->query_bytes_read : 0)
         << ",\n\"shard_query_load_seconds\":" << (shards ? shards->query_load_seconds : 0)
@@ -3179,7 +3363,9 @@ int run(Options o)
         << ",\n\"global_error_budget_policy\":" << json_string(global_budget_policy(o)) << "\n}\n";
     metrics.close();
     if (!metrics) throw std::runtime_error("Failed finalizing metrics JSON; output is incomplete");
-    if (schema3(o)) {
+    if (shards) shards->check_integrity();
+    window_report.finish();
+    if (transactional_outputs) {
         production_log.event("output","stage_started","finalize checked main TSV and metrics JSON; sidecars may be partial on failure");
         fs::rename(staged_output,o.output); fs::rename(staged_metrics,o.metrics);
         production_log.event("output","stage_completed","rows=" + std::to_string(totals.queries) +
@@ -3192,11 +3378,18 @@ int run(Options o)
         " output=" + o.output.string() + " metrics=" + o.metrics.string());
     return 0;
 }
+#include "multi_reference.hpp"
+#include "export_kmers.hpp"
 } // namespace
 
 int main(int argc, char ** argv)
 {
-    try { return run(parse_options(argc, argv)); }
+    try {
+        auto options = parse_options(argc,argv);
+        if (options.mode == "export-kmers") return export_kmers(options);
+        if (!options.reference_dir.empty()) return run_reference_directory(options);
+        return run(options);
+    }
     catch (std::exception const & e) {
         try { fraglncrna::production_log.event("failure","stage_failed",e.what(),4);
               fraglncrna::production_log.event("finish","run_failed",std::string("partial outputs must not be used; Error: ") + e.what(),4); }

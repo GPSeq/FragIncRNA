@@ -150,3 +150,27 @@ ibf_shard_reuse = true
 ibf_resume = true
 
 ibf_build_only = false           # true builds a durable index and exits before query reading
+
+# Directory mode replaces reference/output; one FASTA file is one assembly.
+# reference_dir = "genomes"
+# output_dir = "results_multi_genome"
+# output_name_template = "results.tsv"
+# reference_id = "optional_explicit_single_reference_id"
+# reference_recursive = false
+# continue_on_reference_error = false
+# Window reports are opt-in. max_window_rows caps actual streamed positions.
+# window_output = "windows.tsv.gz"
+# window_scope = "all"
+# window_query_ids = "query_ids.txt"
+# window_include_sequence = false
+# kmer_fasta_output = "kmers.fa.gz"
+# max_window_rows = 10000000
+# Cache budgets are MiB, bounded further by physical RAM. Zero disables.
+# ibf_shard_cache_mb = 128
+# reference_page_cache_mb = 64
+
+# Explicit optional archive copy for slow mounted storage (disabled by default).
+# ibf_local_cache_dir = "/tmp/frag-index-read-cache"
+# ibf_local_cache_max_mb = 8192
+
+# candidate_prefilter = true

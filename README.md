@@ -1,5 +1,9 @@
 # FragIncRNA
 
+Directory execution, bounded caches, and window/FASTA exports: see
+[production optimization results](docs/PRODUCTION_OPTIMIZATION_RESULTS.md) and
+[frozen baseline](docs/PRODUCTION_OPTIMIZATION_BASELINE.md).
+
 New per-bin IBF production runs default to sharded flat IBFs. See
 [sharded configuration](configs/sharded_ibf_k20.toml),
 [design and compatibility](docs/SHARDED_IBF_DESIGN.md),
@@ -1051,3 +1055,172 @@ exact scanning, occupancy counting and legacy single-index insertion remain seri
 In sharded runs candidate preparation/reprobing is included in query_seconds;
 some occupancy work happens during index preparation rather than as a separate
 standalone stage. Use total wall/CPU and worker I/O for end-to-end comparisons.
+
+Production cache and window-report metrics are additive. `window_output`,
+`window_scope`, `window_rows`, and `kmer_fasta_output` describe optional exports.
+`canonical_kmer_encoding` specifies the canonical ID representation.
+`ibf_shard_cache_budget_bytes` is the effective cache bound;
+`shard_cache_hits`, `shard_cache_misses`, `shard_cache_evictions`, and
+`shard_cache_peak_bytes` measure deserialized-object reuse. `shard_checksum_count`,
+`shard_checksum_bytes`, and `shard_checksum_seconds` measure whole-archive
+verification once per shard per execution. `shard_first_pass_seconds` and
+`shard_second_pass_seconds` include their shard visits; `shard_global_selection_seconds`
+is global ranking time. `shard_query_load_seconds` measures query-time
+metadata parsing/deserialization without whole-payload hashing. These timings overlap;
+do not sum load time and pass time as disjoint stages.
+
+`reference_page_cache_hits`, `reference_page_cache_misses`, and
+`reference_page_cache_budget_bytes` describe the bounded shared reference cache.
+`candidate_logical_requested_bases` sums requests before cross-query merging;
+`candidate_unique_start_bases` sums the merged union of eligible genomic start
+coordinates per batch; `candidate_unique_intervals` counts those merged intervals.
+The legacy `candidate_reference_bytes_read` and `candidate_reference_bases_fetched`
+both retain their old meaning: decoded task bases including k−1 lookahead.
+`candidate_reference_userspace_read_bytes` measures actual bytes read from the
+normalized reference file by the verifier (including page overfetch).
+`process_io_read_bytes` is the OS-reported physical IO for the entire process,
+including input/index verification; it is not verifier-only IO or OS cache hits.
+
+`ibf_local_cache_directory` records an explicitly requested optional disk copy.
+`shard_local_cache_copied_bytes` and `shard_local_cache_checksum_count` record its
+copy work and integrity checks separately from canonical-archive checksums.
+
+`logical_ibf_positive_pairs` is a checked 64-bit logical count, independent of
+materialized calibration limits. `unique_query_lookup_keys` sums per-query
+unique lookup keys (it does not deduplicate across transcripts).
+`query_encoding_seconds` measures encoding and grouping separately for sharded
+runs; it is null for single IBFs where the existing encoder also probes.
+`candidate_interval_grouping_seconds` measures owner/mask setup and interval
+normalization, a subset of `candidate_verification_seconds`.
+`candidate_reference_read_seconds` measures userspace seek/read wall time;
+`reference_page_cache_lock_wait_seconds` sums worker wait time for the page
+cache lock. These are aggregate worker times, not isolated kernel IO wait.
+
+Run one assembly or a directory using the isolated executable you build:
+
+~~~bash
+/tmp/frag-production-opt-20261021/build/lncrna_mers_v2 --config configs/single_genome_sharded_example.toml
+/tmp/frag-production-opt-20261021/build/lncrna_mers_v2 --config configs/multi_genome_sharded_example.toml
+~~~
+
+The directory command processes every recognized assembly once at k=20; these
+examples have **not** been launched on the complete directory. Schedule other
+k values explicitly. `reference_dir`/`--reference-dir` replaces `reference`;
+`output_dir`/`--output-dir` replaces `output`. The pairs are mutually exclusive.
+Supported extensions are .fa, .fasta and .fna, optionally followed by .gz.
+Discovery sorts full paths, defaults to non-recursive, and skips symlink files
+and symlink directories. `reference_recursive` enables recursion. Each file
+is one assembly; per-chromosome files must be combined explicitly. Directory
+runs strip only recognized suffixes, preserve the distinctive full filename,
+replace unsafe ID characters with underscores, and reject case-insensitive or
+sanitized collisions before processing any genome.
+
+Outputs appear as OUTPUT_DIR/REFERENCE_ID/k20/results.tsv with the existing
+metrics/log/tuning/per-bin sidecars. `output_name_template` optionally substitutes
+`{reference_id}` and `{k}` in a basename. In directory mode `ibf_shard_dir` is an
+index root, with REFERENCE_ID/k20 below it; a configured `reference_cache` is
+also a root. Explicit report paths in directory mode must be basenames. Single
+reference save/load archives, build-only and dry-run are intentionally rejected
+in directory mode; use the existing single-reference command for those tasks.
+
+The atomic `run_manifest.tsv` records reference paths/file hashes, k, settings
+hashes, index/output directories, status, runtime, query count and validation.
+The entire assembly output directory is staged, files are flushed, a
+`COMPLETED.sha256.tsv` ledger is sealed, then the directory is atomically
+published. Failed/interrupted staging directories are retained for diagnosis.
+A retry verifies completed ledgers and skips their genomes. Completed results
+are never replaced. The fingerprint includes effective arguments, the config,
+input bytes and executable hash: changed settings or binaries require a new
+output directory. A partial genome restarts from its query beginning while
+reusing valid index checkpoints. There is no query-row append checkpoint.
+`continue_on_reference_error` defaults false; enabling it processes later
+assemblies after a failure and still returns nonzero. Shared directory-run
+inputs must be regular files; descriptors detect changes between assemblies.
+
+`ibf_shard_cache_mb` bounds cached deserialized IBF bitvectors in MiB, default
+128, additionally capped at 1/32 effective RAM (including cgroup limits) and
+any explicit index-memory budget. Zero disables it. An oversized shard is
+visited transiently with no cached bitvectors held alongside it. The existing
+index budget still covers bitvectors, not total process RSS. The cache uses
+deterministic LRU; the second pass visits shards in reverse order to reuse the
+most recent objects. Unique query keys retain original occurrence weights;
+selection still ranks all global bins once. The second membership pass remains
+necessary to preserve selected-window support without a window-by-bin matrix.
+
+Each canonical shard is SHA-256 verified once per execution through a pinned
+file descriptor. File identity, size, nanosecond mtime **and ctime** are checked
+before/after loads and cache use and before main-output publication. This
+protects against normal external changes, truncations, replacement and symlink
+swaps under an honest kernel/filesystem. Change stamps are not cryptographic
+proof against a privileged writer/kernel that can forge them. Every new
+execution verifies cryptography again; archive metadata/global mapping checks
+remain enabled. Cereal objects are deserialized into memory, not zero-copy mmap.
+
+`ibf_local_cache_dir` optionally enables an explicit, SHA-verified disk copy for
+slow mounted-volume indexes. It never changes the canonical manifest path.
+`ibf_local_cache_max_mb` bounds that copy (default 8192 MiB); an insufficient
+budget/disk or corrupt existing copy fails safely. Entries are grouped by
+compatibility hash, locked, pinned, and checked during use along with their
+canonical originals. No local copy is made by default, and no automatic cache
+pruning deletes user data. Mounted index paths receive a storage advisory.
+
+OpenMP already existed and remains enabled by default. Configure with
+LNCRNA_MERS_ENABLE_OPENMP=ON and inspect the startup log plus effective thread
+metrics; the actual worker count respects CPU affinity/cgroup quotas. Shard
+IO/validation and global ordering are coordinated serially. Query records and
+verification tasks use dynamic OpenMP scheduling. The shared reference page
+LRU copies bounded pages under a mutex; decoding and attribution run outside
+it. `reference_page_cache_mb` defaults 64 MiB, capped at 1/64 effective RAM;
+zero disables retained pages. Both cache knobs are resource controls and do
+not change scientific thresholds. `max_ibf_bin_pairs` limits retained
+calibration pairs; production keeps checked 64-bit logical counts and logs
+large workloads without dropping hits or aborting merely at that threshold.
+
+Window reports are disabled by default. Use `window_output`/`--window-output`
+with TSV or .tsv.gz; `window_scope` selects all, verified, candidate or failed
+(valid windows lacking an exact candidate hit). `window_query_ids` filters
+using one exact query ID per line, and unknown IDs fail. `max_window_rows`
+defaults 10 million across the run; exceeding it fails with staged reports
+instead of publishing a silently truncated report. A large all-window export
+can be much larger than transcript summaries. Directory runs apply the cap
+independently to each assembly.
+
+Window schema 1 includes `k_index` (the original zero-based sliding ordinal),
+`query_start`, `query_end` (half-open), `valid`, `canonical_kmer_id`,
+`ibf_any_bin_positive`, `ibf_candidate_positive`,
+`exact_verified_in_candidates`, and `matching_candidate_regions_count`.
+Duplicate positions remain separate; invalid/masked positions retain their
+indices and use NA for sequence/ID and unavailable predicates. Canonical IDs
+are dna2bit-v1:k:hex: A=0,C=1,G=2,T=3, first base most significant, minimum of
+forward and reverse-complement encodings, hex without required leading zeroes.
+The k is explicit, so this is an exact encoding, not a probabilistic hash.
+`window_include_sequence` adds `kmer_sequence` with the actual query substring
+(including original case) for valid windows. Rows also carry scoring, strand,
+repeat, masking and verification-scope provenance. `kmer_fasta_output` streams
+one valid original occurrence per record, optionally gzip, with percent-escaped
+IDs carrying reference/query/index/window coordinates; duplicates retain IDs.
+
+Query-only export uses the shared window encoder and labels genomic fields NA:
+
+~~~bash
+/tmp/frag-production-opt-20261021/build/lncrna_mers_v2 --mode export-kmers \
+  --queries queries.fa --k 20 --window-output windows.tsv.gz \
+  --window-include-sequence --kmer-fasta-output kmers.fa.gz
+~~~
+
+Keep the active executable, index and output directories untouched. After the
+active job finishes, build this version in a separate directory, review the
+[baseline](docs/PRODUCTION_OPTIMIZATION_BASELINE.md) and
+[results](docs/PRODUCTION_OPTIMIZATION_RESULTS.md), then run a bounded pilot
+with a new output directory. Existing format-3 archives remain compatible;
+reuse only when no other job holds their directory lock. Preserve original
+results before migrating; no automatic replacement or cleanup is performed.
+
+`candidate_prefilter` enables a small rejection filter before the verifier's
+exact owner map (default true; `--no-candidate-prefilter` disables it for
+measurement). `verification_prefilter_rejections` counts definite absences;
+`verifier_full_key_lookups` counts subsequent exact map probes. Every owner key
+sets its filter bits, so this shortcut cannot remove a true key. False filter
+admissions only cost an extra exact lookup and do not alter reported IBF FPR,
+candidate recall, verification scope, or exact window masks. Reference pages
+are 16 KiB; an earlier 64 KiB trial overfetched on sparse 80-kb loci.

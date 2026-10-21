@@ -4,6 +4,7 @@ void verify_candidate_intervals(Options const & o, ReferenceInfo const & info, R
                                 std::vector<Query> const & batch, IndexedReference const & reference,
                                 ExactResult & result) {
     using fraglncrna::production_log;
+    auto grouping_start = Clock::now();
     std::vector<std::vector<std::vector<uint64_t>>> masks(batch.size());
     result.per_bin_region_exact_windows.resize(batch.size());
     result.per_bin_candidate_union_windows.resize(batch.size());
@@ -49,6 +50,25 @@ void verify_candidate_intervals(Options const & o, ReferenceInfo const & info, R
             if (o.strand != "forward" && w.reverse != w.forward) owners[w.reverse].emplace_back(qi,wi);
         }
     }
+    // A cache-local rejection filter avoids two large hash-table probes for
+    // almost every reference key. It can only admit extra exact lookups: every
+    // owner key sets the same three bits used here, so it cannot reject a true
+    // owner. It does not replace the exact map or change scientific FPR.
+    auto filter_hash = [](uint64_t value) {
+        value ^= value >> 30; value *= 0xbf58476d1ce4e5b9ULL;
+        value ^= value >> 27; value *= 0x94d049bb133111ebULL;
+        return value ^ (value >> 31);
+    };
+    auto filter_bits = [](uint64_t hash) {
+        return (uint64_t{1} << (hash & 63)) | (uint64_t{1} << ((hash >> 6) & 63)) |
+               (uint64_t{1} << ((hash >> 12) & 63));
+    };
+    std::size_t filter_words = 1;
+    while (filter_words < owners.size()/4+1) filter_words *= 2;
+    std::vector<uint64_t> rejection_filter(o.candidate_prefilter ? filter_words : 0,0);
+    if (o.candidate_prefilter) for (auto const & [key,ignored] : owners) {
+        auto hash = filter_hash(key); rejection_filter[(hash >> 18) & (filter_words-1)] |= filter_bits(hash);
+    }
     // Fetch a reference start interval once per batch, even when many queries
     // or loci request it. Extension k-1 is bounded by the original contig.
     std::sort(intervals.begin(), intervals.end(), [](auto const & a, auto const & b) {
@@ -60,6 +80,10 @@ void verify_candidate_intervals(Options const & o, ReferenceInfo const & info, R
             merged.back().end = std::max(merged.back().end,interval.end);
         else merged.push_back(interval);
     }
+    for (auto const & interval : merged) result.candidate_unique_start_bases += interval.end-interval.start;
+    for (auto const & q : batch) for (auto const & region : q.per_bin_regions)
+        result.candidate_logical_requested_bases += std::min(region.end+o.k-1,info.lengths[region.contig])-region.start;
+    result.candidate_unique_intervals = merged.size();
     // Within each task, the set of query/locus owners is constant. Therefore
     // one valid occurrence of a key suffices for every owner in that task.
     // Splitting at every locus boundary makes bounded repeated-key caching
@@ -77,8 +101,9 @@ void verify_candidate_intervals(Options const & o, ReferenceInfo const & info, R
     for (auto const & task : tasks)
         result.candidate_reference_bases += std::min(task.end+o.k-1,info.lengths[task.contig])-task.start;
     result.candidate_interval_reads = tasks.size();
+    result.candidate_grouping_seconds = std::chrono::duration<double>(Clock::now()-grouping_start).count();
     auto const & immutable_owners = std::as_const(owners);
-    std::atomic<std::size_t> cache_hits{0}, cache_insertions{0};
+    std::atomic<std::size_t> cache_hits{0}, cache_insertions{0}, prefilter_rejections{0}, full_lookups{0};
     // Private streams and rolling encoders. Only word-wise atomic OR touches
     // shared scientific state, then ordered aggregation after the barrier.
     // Wave size bounds progress latency to at most one 1-Mb task per worker.
@@ -94,18 +119,22 @@ void verify_candidate_intervals(Options const & o, ReferenceInfo const & info, R
             BedCursor bed{reference_bed}; bed.reset(info.ids[task.contig]);
             std::array<char,65536> buffer;
             std::unordered_set<uint64_t> seen_keys;
-            std::size_t local_cache_hits = 0, local_insertions = 0;
+            std::size_t local_cache_hits = 0, local_insertions = 0, local_rejections = 0, local_lookups = 0;
             constexpr std::size_t cache_limit = 8192;
             for (std::size_t pos = task.start; pos < end;) {
                 fraglncrna::check_stop();
                 auto n = std::min(buffer.size(),end-pos);
-                input.read(buffer.data(),static_cast<std::streamsize>(n));
-                if (input.gcount() != static_cast<std::streamsize>(n)) throw std::runtime_error("Truncated indexed reference candidate interval");
+                reference.read(input,offsets[task.contig]+pos,buffer.data(),n);
                 for (std::size_t j = 0; j < n; ++j,++pos) {
                     if ((pos & 4095) == 0) fraglncrna::check_stop();
                     auto w = maker.push(buffer[j],bed.at(pos));
                     if (!w || !w->valid) continue;
+                    if (o.candidate_prefilter) {
+                        auto hash = filter_hash(w->forward), bits = filter_bits(hash);
+                        if ((rejection_filter[(hash >> 18) & (filter_words-1)] & bits) != bits) { ++local_rejections; continue; }
+                    }
                     if (seen_keys.contains(w->forward)) { ++local_cache_hits; continue; }
+                    ++local_lookups;
                     auto found = immutable_owners.find(w->forward);
                     if (found == immutable_owners.end()) continue;
                     std::size_t start = pos+1-o.k;
@@ -157,17 +186,26 @@ void verify_candidate_intervals(Options const & o, ReferenceInfo const & info, R
             }
             cache_hits.fetch_add(local_cache_hits,std::memory_order_relaxed);
             cache_insertions.fetch_add(local_insertions,std::memory_order_relaxed);
+            prefilter_rejections.fetch_add(local_rejections,std::memory_order_relaxed);
+            full_lookups.fetch_add(local_lookups,std::memory_order_relaxed);
         });
         production_log.progress("verify","completed_intervals=" + std::to_string(base+count) + "/" + std::to_string(tasks.size()));
     }
+    result.verification_prefilter_rejections = prefilter_rejections.load();
+    result.verifier_full_key_lookups = full_lookups.load();
     result.candidate_cache_hits = cache_hits.load();
     result.candidate_cache_insertions = cache_insertions.load();
     for (std::size_t qi = 0; qi < batch.size(); ++qi) {
         auto & united = result.candidate_window_masks[qi];
+        if (!o.window_output.empty()) result.candidate_region_matches.emplace_back(batch[qi].windows.size(),0);
         for (auto const & mask : masks[qi]) {
             std::size_t count = 0;
             for (std::size_t word = 0; word < mask.size(); ++word) {
                 count += std::popcount(mask[word]); united[word] |= mask[word];
+                if (!o.window_output.empty()) {
+                    auto bits = mask[word];
+                    while (bits) { ++result.candidate_region_matches[qi][word*64+std::countr_zero(bits)]; bits &= bits-1; }
+                }
             }
             result.per_bin_region_exact_windows[qi].push_back(count);
         }
