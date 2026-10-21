@@ -128,6 +128,20 @@ if (BUILD_TESTING)
     add_test(NAME kmer_v2_toml
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_kmer_v2_toml.py
                      $<TARGET_FILE:lncrna_mers_v2>)
+    option(LNCRNA_MERS_REAL_DATA_TESTS "Run optional bounded real-data shard comparisons" OFF)
+    set(LNCRNA_MERS_REAL_REFERENCE "${CMAKE_SOURCE_DIR}/rerun_test/genomes/T2TMMU8v20_GCF_049350105.2_T2T-MMU8v2.0_genomic.fna.gz" CACHE FILEPATH "One real FASTA reference")
+    set(LNCRNA_MERS_REAL_QUERIES "${CMAKE_SOURCE_DIR}/rerun_test/gencode.v49.lncRNA_transcripts.fa" CACHE FILEPATH "GENCODE query FASTA")
+    if (LNCRNA_MERS_REAL_DATA_TESTS)
+        add_test(NAME sharded_ibf_real_data
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_sharded_real_data.py
+                    --program $<TARGET_FILE:lncrna_mers_v2>
+                    --reference ${LNCRNA_MERS_REAL_REFERENCE} --queries ${LNCRNA_MERS_REAL_QUERIES}
+                    --work-dir ${CMAKE_BINARY_DIR}/real-data-shards)
+        set_tests_properties(sharded_ibf_real_data PROPERTIES LABELS "real_data;optional" SKIP_RETURN_CODE 77)
+    endif()
+    add_test(NAME sharded_ibf
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_sharded_ibf.py
+                     $<TARGET_FILE:lncrna_mers_v2>)
     add_test(NAME per_bin_ibf
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_per_bin_ibf.py
                      $<TARGET_FILE:lncrna_mers_v2>)

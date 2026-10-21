@@ -14,6 +14,9 @@ double diagnose_ibf(Options & o, ReferenceInfo const & info) {
             production_log.event("ibf-diagnostics", "warning", "Loaded archive will not be resized. Rebuild using --save-index NEW.ibf --ibf-auto-tune apply", 3);
         o.fpr = proposed;
     }
+    if (o.genome_fpr_given && !legacy && !apply)
+        production_log.event("ibf-diagnostics", "warning",
+            "genome_fpr is recorded as a requested target only: this explicit tuner/method combination does not apply global budgeting; inspect actual p_bin and global union bound",3);
     std::size_t bits = planned_bin_bits(o.fragment_size, o.hash_functions, o.fpr);
     std::size_t bytes = planned_index_bytes(info.bin_count, bits);
     double union_estimate = fraglncrna::union_independent(info.bin_count,o.fpr);
@@ -35,7 +38,7 @@ double diagnose_ibf(Options & o, ReferenceInfo const & info) {
     if (union_estimate > 0.1)
         production_log.event("ibf-diagnostics", "warning",
             "nominal any-bin false-positive probability near " + std::to_string(union_estimate) +
-            " (independent-bin approximation, not certainty or biological FDR). " + message.str(), 3);
+            " for the global_ibf any-bin statistic; this is not a candidate classifier error rate or biological FDR (independence is approximate). " + message.str(), 3);
     fs::create_directories(o.ibf_tuning_report.parent_path().empty() ? "." : o.ibf_tuning_report.parent_path());
     std::ofstream report(o.ibf_tuning_report);
     if (!report) throw std::runtime_error("Cannot write IBF tuning report");
@@ -85,8 +88,10 @@ double diagnose_ibf(Options & o, ReferenceInfo const & info) {
     }
     report << "]\n}\n"; report.close();
     if (!report) throw std::runtime_error("Failed writing IBF tuning diagnostics");
-    if (o.ibf_max_index_memory_gb > 0 && double(bytes) > o.ibf_max_index_memory_gb * 1e9)
-        throw std::runtime_error("IBF estimated bytes " + std::to_string(bytes) + " exceed --ibf-max-index-memory-gb; increase budget or inspect hash sensitivity in " + o.ibf_tuning_report.string());
+    auto resident_bytes = o.ibf_layout != "single" && o.ibf_shard_storage == "disk" ?
+        planned_index_bytes(std::min(info.bin_count,o.max_bins_per_ibf),bits) : bytes;
+    if (o.ibf_max_index_memory_gb > 0 && double(resident_bytes) > o.ibf_max_index_memory_gb * 1e9)
+        throw std::runtime_error("IBF estimated resident bytes " + std::to_string(resident_bytes) + " exceed --ibf-max-index-memory-gb; increase budget or inspect hash sensitivity in " + o.ibf_tuning_report.string());
     if (unsafe && o.ibf_fail_on_unsafe_settings)
         throw std::runtime_error("Unsafe global_ibf settings; " + recommendation);
     if (!o.save_index.empty()) {

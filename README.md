@@ -1,5 +1,12 @@
 # FragIncRNA
 
+New per-bin IBF production runs default to sharded flat IBFs. See
+[sharded configuration](configs/sharded_ibf_k20.toml),
+[design and compatibility](docs/SHARDED_IBF_DESIGN.md),
+[measured evidence](docs/SHARDED_IBF_BENCHMARKS.md), and
+[current acceptance status](docs/SHARDED_IBF_IMPLEMENTATION_STATUS.md).
+Legacy single archives remain available with `ibf_layout="single"`.
+
 The selectable production workflow is now available as schema 3. Use
 `--mode ibf --scoring-method per_bin_verified` for IBF candidates followed by
 exact verification within indexed candidate intervals. The main recovery and
@@ -930,3 +937,117 @@ To run only the unit test binary directly:
 ```bash
 ./build/lncrna_mers_tests
 ```
+
+
+### Sharded IBF layout (v2)
+
+The sharded extension is described in [the design](docs/SHARDED_IBF_DESIGN.md),
+[manifest specification](docs/SHARDED_IBF_MANIFEST.md), [FPR notes](docs/SHARDED_IBF_FPR.md)
+and [implementation status](docs/SHARDED_IBF_IMPLEMENTATION_STATUS.md).
+Explicit `--ibf-layout sharded` uses independent flat IBFs with stable global bins.
+`--max-bins-per-ibf` limits real bins (SeqAn pads physical bins to a multiple of 64).
+`--ibf-shard-dir`, `--ibf-shard-storage disk|memory`,
+`--ibf-shard-retention keep|cleanup_on_success`, `--ibf-shard-reuse` /
+`--no-ibf-shard-reuse`, and `--ibf-resume` / `--no-ibf-resume` control persistence.
+All have underscore-named TOML equivalents. Defaults are 1000 real bins, disk,
+keep, reuse and resume. Explicit scoring in new IBF runs defaults to sharded;
+historical implicit-scoring configs retain single layout and scoring. Setting
+sharded/auto layout with no scoring in IBF mode selects `per_bin_verified`.
+Legacy `save_index` / `load_index` select single when layout is omitted, and
+require `ibf_layout="single"` when layout is explicit. They never load manifests.
+`auto` chooses shards when B exceeds the cap or single memory exceeds the budget;
+the exact choice and estimates are logged. Exact mode allocates no IBFs.
+
+Candidates are globally ranked and merged before verification, including across
+shard borders. Splitting identical bins does not change membership FPR or logical
+scores. The current bounded query-block scheduler loads one shard at a time, then
+reprobes selected shards for candidate-window union support. Repeated loads per
+block are a known performance cost; full transcriptome scaling requires benchmark
+review. `ibf_max_index_memory_gb` bounds resident IBF bitvectors, not total RSS;
+reference cache, query evidence, metadata and archive buffers add memory. Memory
+storage fails if projected bitvectors exceed this cap or half physical RAM.
+
+Explicit layout adds TSV provenance fields (existing schema-3 meanings are kept):
+`ibf_layout`, `shard_count`, `max_bins_per_ibf`, `global_bin_count`, `index_manifest`,
+`manifest_sha256`, `per_bin_fpr_requested`, `per_bin_fpr_effective`,
+`candidate_exact_verification`, `global_error_budget_policy`.
+The metrics include those fields, plus `shards_built`, `shards_reused`,
+`shard_query_loads`, `shard_query_bytes_read`, `shard_query_load_seconds`,
+`max_resident_shards`, and `query_scheduler`.
+Shard count is a physical-layout property; biological interpretation still depends
+on `scoring_method`, `primary_match_source` and `verification_scope`.
+
+A self-checksummed `manifest.tsv` is authoritative; preserve it along with archives.
+Keep is the default. Resume validates compatibility and checksums, rebuilding missing
+or invalid shards. Corrupt manifests and incompatible settings fail closed: choose
+a fresh directory. The OS directory lock prevents concurrent mutation and releases
+on process exit. Never delete `.lock` while another process is using the directory.
+Cleanup after successful finalized outputs removes only archives created by that
+run; preexisting/reused files and unrelated data remain. The manifest stays as an
+audit record; the next resumed run can rebuild missing shards. On failure archives
+remain for resume. See `configs/sharded_ibf_k20.toml` for production settings.
+
+
+The Linux worker counters `process_io_read_bytes` and `process_io_write_bytes`
+measure storage I/O, while `process_io_read_characters` and
+`process_io_write_characters` include cached read/write syscall traffic.
+Shard build insertion uses OpenMP over disjoint 64-local-bin storage words,
+as permitted by the SeqAn3 flat-IBF thread-safety contract. Each shard log
+records its actual insertion thread limit; encoding, streams and distinct-key
+sets belong to individual workers. Single-layout insertion remains serial.
+After disk-mode release the log records current worker RSS and zero resident
+shards. Total worker peak RSS also includes query/reference and archive overhead.
+
+
+For an independent build stage set `ibf_build_only = true` / `--ibf-build-only`.
+This saves and validates persistent shards (or a single `save_index`), logs the
+final index checksum and exits without reading query records or creating result
+rows. A readable query path remains required by the existing public interface.
+Retention must be keep. For a subsequent strict query stage use the same settings
+with reuse enabled and resume disabled; missing/invalid archives then fail instead
+of triggering a rebuild. Leave build-only false in ordinary build-and-query runs.
+Per-bin production invocations without legacy archive paths prefer sharded even
+when using the historical `fdr_control_per_bin` flag. Implicit global scoring stays
+compatible with historical configurations.
+
+
+`global_error_budget_policy` is `union_bound` when the conservative global
+budget rule was applied, `per_bin` when sizing remains per-bin, or
+`requested_only` when an explicit genome target was recorded without applying
+it under the selected tuner/method. Explicit recommend/off preserves FPR;
+apply changes global_ibf. Supplying genome_fpr without an explicit tuner keeps
+the historical explicit-target budgeting rule. Target columns are requests,
+not achieved error-rate guarantees. `shard_query_bytes_read` sums serialized
+archive sizes per load; checksum passes cause additional read traffic captured
+by the worker read-character and physical-I/O counters.
+
+
+Only calibration retains per-window bin-ID lists, so its in-flight pair count
+limits block splitting. Production and validation keep sparse H_b counts and do
+not split an already bounded query block merely because the total logical
+membership pairs exceed that retained-pair cap. Their existing per-query work
+cap remains enforced. Independent exact truth scans once per actual query block;
+query block size and calibration caps should be chosen before large validation
+runs to avoid repeated whole-reference scans.
+
+
+Explicit `per_bin_exact_verify=false` selects unverified per-bin scoring when
+using the new layout defaults. An explicit `fdr_control_per_bin=false` retains
+global scoring unless scoring_method explicitly selects a per-bin method. An
+explicit scoring_method takes precedence over these historical Boolean aliases.
+
+
+Memory shard storage retains newly built IBF objects for querying after durable
+archive checksum/metadata validation; it avoids an additional payload
+deserialization. Disk storage releases each object before loading the next.
+
+
+All layouts reject a planned resident bitvector allocation above half physical
+RAM before allocating it, including when no explicit index budget was supplied.
+This reserves room for query evidence and worker overhead; it is still not a hard
+total-process memory cap. The observed OpenMP team size is a worker limit;
+active parallel work depends on task count. Reference inspection, whole-reference
+exact scanning, occupancy counting and legacy single-index insertion remain serial.
+In sharded runs candidate preparation/reprobing is included in query_seconds;
+some occupancy work happens during index preparation rather than as a separate
+standalone stage. Use total wall/CPU and worker I/O for end-to-end comparisons.

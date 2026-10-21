@@ -32,8 +32,10 @@ fragment_size = 4
 fragments = "/tmp/fraglncrna-v2-fragments.tsv"  # "" disables this report
 
 # IBF settings used by ibf, validate, and calibrate. --fpr is the maximum
-# per-bin design FPR. IBF-only mode automatically caps it at 0.01/bin_count;
-# set genome_fpr explicitly to change that whole-reference target. Keep this
+# per-bin design FPR. Per-bin production keeps this cap. Historical implicit
+# global mode budgets 0.01/bin_count only without an explicit tuner setting.
+# Explicit genome_fpr without an explicit tuner applies a global budget.
+# With explicit recommend/off a genome target is requested-only. Keep this
 # line commented in exact mode, which has no IBF. A loaded index must match
 # the effective per-bin FPR and all other recorded compatibility metadata.
 hash_functions = 3              # SeqAn flat IBF permits 1..5
@@ -135,3 +137,16 @@ ibf_max_index_memory_gb = 0      # decimal GB, 0 = no explicit index cap
 ibf_fail_on_unsafe_settings = false
 ibf_tuning_report = ""          # <output>.ibf_tuning.json
 ibf_dry_run = false
+
+# Physical IBF layout. This example is exact-only; no IBF is allocated.
+# Explicit single preserves legacy archive workflow. For production use
+# configs/sharded_ibf_k20.toml (sharded + per_bin_verified).
+ibf_layout = "single"           # sharded | single | auto
+max_bins_per_ibf = 1000          # real bins; physical bins are padded to 64
+ibf_shard_dir = ""              # sharded/auto only; empty defaults beside output
+ibf_shard_storage = "disk"      # disk: one resident IBF; memory: all, guarded
+ibf_shard_retention = "keep"     # keep | cleanup_on_success (owned files only)
+ibf_shard_reuse = true
+ibf_resume = true
+
+ibf_build_only = false           # true builds a durable index and exits before query reading

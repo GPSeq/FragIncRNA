@@ -37,6 +37,8 @@
 #include <utility>
 #include <vector>
 #include <unistd.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include "production_runtime.hpp"
 #include "bloom_sizing.hpp"
 
@@ -53,7 +55,11 @@ struct Options
     fs::path positions, calibration_bins, fragments;
     fs::path reference_repeat_bed, query_repeat_bed, repeat_classes, reference_hit_classes, exon_blocks;
     fs::path loci_output, expected_loci_bed, expected_loci_output;
-    fs::path save_index, load_index;
+    fs::path save_index, load_index, ibf_shard_dir;
+    std::string ibf_layout = "single", ibf_shard_storage = "disk", ibf_shard_retention = "keep";
+    std::size_t max_bins_per_ibf = 1000, shard_count = 0, global_bin_count = 0;
+    std::string index_manifest, manifest_sha256;
+    bool layout_given = false, ibf_shard_reuse = true, ibf_resume = true, ibf_build_only = false;
     fs::path threshold_table, per_bin_output;
     fs::path reference_cache, log_file, ibf_tuning_report;
     std::string scoring_method, ibf_auto_tune = "recommend", log_level = "info";
@@ -68,7 +74,7 @@ struct Options
     std::size_t locus_gap = 8000, max_locus_span = 1000000, max_locus_rows = 100000, max_expected_loci = 1000000;
     std::size_t per_bin_min_hits = 2, per_bin_top_k = 64, per_bin_max_locus_gap = 50000;
     bool local_window_given = false, genome_fpr_given = false;
-    bool fdr_control_per_bin = false, per_bin_exact_verify = true;
+    bool fdr_control_per_bin = false, per_bin_exact_verify = true, fdr_option_given = false;
     double fpr = 0.01, basic = 0.75, strict = 0.85;
     double per_bin_min_fraction = 0.05;
     double genome_fpr = 0.01, requested_per_bin_fpr = 0.01;
@@ -279,7 +285,7 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     std::size_t line_number = 0;
     auto is_integer = [](std::string const & key)
     {
-        return key == "threads" || key == "progress_every_queries" || key == "k" || key == "fragment_size" || key == "hash_functions" ||
+        return key == "max_bins_per_ibf" || key == "threads" || key == "progress_every_queries" || key == "k" || key == "fragment_size" || key == "hash_functions" ||
                key == "batch_windows" || key == "local_window" || key == "max_position_rows" ||
                key == "max_calibration_pairs" || key == "max_ibf_bin_pairs" ||
                key == "max_repeat_intervals" || key == "max_exon_blocks" ||
@@ -295,7 +301,8 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     };
     auto is_string = [](std::string const & key)
     {
-        return key == "scoring_method" || key == "ibf_auto_tune" || key == "ibf_tuning_report" ||
+        return key == "ibf_layout" || key == "ibf_shard_dir" || key == "ibf_shard_storage" ||
+               key == "ibf_shard_retention" || key == "scoring_method" || key == "ibf_auto_tune" || key == "ibf_tuning_report" ||
                key == "log_file" || key == "log_level" || key == "reference_cache" ||
                key == "reference" || key == "queries" || key == "output" || key == "metrics" ||
                key == "positions" || key == "calibration_bins" || key == "fragments" ||
@@ -309,7 +316,7 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     };
     auto is_boolean = [](std::string const & key)
     {
-        return key == "ibf_fail_on_unsafe_settings" || key == "ibf_dry_run" || key == "log_to_console" ||
+        return key == "ibf_shard_reuse" || key == "ibf_resume" || key == "ibf_build_only" || key == "ibf_fail_on_unsafe_settings" || key == "ibf_dry_run" || key == "log_to_console" ||
                key == "log_per_query" || key == "log_per_bin" ||
                key == "fdr_control_per_bin" || key == "per_bin_exact_verify";
     };
@@ -454,6 +461,10 @@ Options parse_options(int argc, char ** argv)
                          "[--per-bin-top-k 64] [--per-bin-max-locus-gap 50000] "
                          "[--per-bin-exact-verify | --no-per-bin-exact-verify] "
                          "[--per-bin-output OUT.tsv] "
+                         "[--ibf-layout sharded|single|auto] [--max-bins-per-ibf 1000] "
+                         "[--ibf-shard-dir DIRECTORY] [--ibf-shard-storage disk|memory] "
+                         "[--ibf-shard-retention keep|cleanup_on_success] "
+                         "[--ibf-shard-reuse | --no-ibf-shard-reuse] [--ibf-resume | --no-ibf-resume] [--ibf-build-only] "
                          "[--save-index INDEX.ibf | --load-index INDEX.ibf] "
                          "[--metrics OUT.json] [--scoring-method global_ibf|per_bin_ibf|per_bin_verified|global_exact] "
                          "[--threads 1] [--reference-cache BASES.bin] "
@@ -464,8 +475,14 @@ Options parse_options(int argc, char ** argv)
                          "[--progress-every-queries 1000] [--log-per-query] [--log-per-bin]\n";
             std::exit(0);
         }
-        if (key == "--fdr-control-per-bin") { o.fdr_control_per_bin = true; continue; }
-        if (key == "--no-fdr-control-per-bin") { o.fdr_control_per_bin = false; continue; }
+        if (key == "--ibf-build-only") { o.ibf_build_only = true; continue; }
+        if (key == "--no-ibf-build-only") { o.ibf_build_only = false; continue; }
+        if (key == "--ibf-shard-reuse") { o.ibf_shard_reuse = true; continue; }
+        if (key == "--no-ibf-shard-reuse") { o.ibf_shard_reuse = false; continue; }
+        if (key == "--ibf-resume") { o.ibf_resume = true; continue; }
+        if (key == "--no-ibf-resume") { o.ibf_resume = false; continue; }
+        if (key == "--fdr-control-per-bin") { o.fdr_control_per_bin = true; o.fdr_option_given = true; continue; }
+        if (key == "--no-fdr-control-per-bin") { o.fdr_control_per_bin = false; o.fdr_option_given = true; continue; }
         if (key == "--per-bin-exact-verify") { o.per_bin_exact_verify = true; continue; }
         if (key == "--no-per-bin-exact-verify") { o.per_bin_exact_verify = false; continue; }
         if (key == "--ibf-fail-on-unsafe-settings") { o.ibf_fail_on_unsafe_settings = true; continue; }
@@ -495,6 +512,11 @@ Options parse_options(int argc, char ** argv)
         else if (key == "--discover-loci") o.loci_output = value;
         else if (key == "--expected-loci-bed") o.expected_loci_bed = value;
         else if (key == "--expected-loci-output") o.expected_loci_output = value;
+        else if (key == "--ibf-layout") { o.ibf_layout = value; o.layout_given = true; }
+        else if (key == "--max-bins-per-ibf") o.max_bins_per_ibf = parse_size(value,key);
+        else if (key == "--ibf-shard-dir") o.ibf_shard_dir = value;
+        else if (key == "--ibf-shard-storage") o.ibf_shard_storage = value;
+        else if (key == "--ibf-shard-retention") o.ibf_shard_retention = value;
         else if (key == "--save-index") o.save_index = value;
         else if (key == "--load-index") o.load_index = value;
         else if (key == "--mask-target") o.mask_target = value;
@@ -565,6 +587,29 @@ Options parse_options(int argc, char ** argv)
         throw std::runtime_error("--reference-hit-classes requires --repeat annotate");
     if (o.mode != "ibf" && o.mode != "exact" && o.mode != "validate" && o.mode != "calibrate")
         throw std::runtime_error("Invalid --mode");
+    if (!o.max_bins_per_ibf || o.max_bins_per_ibf > std::numeric_limits<std::size_t>::max()-63)
+        throw std::runtime_error("--max-bins-per-ibf must be positive and leave room for physical bin padding");
+    if (o.ibf_layout != "single" && o.ibf_layout != "sharded" && o.ibf_layout != "auto")
+        throw std::runtime_error("Invalid --ibf-layout (single/sharded/auto)");
+    if (o.ibf_shard_storage != "disk" && o.ibf_shard_storage != "memory")
+        throw std::runtime_error("Invalid --ibf-shard-storage (disk/memory)");
+    if (o.ibf_shard_retention != "keep" && o.ibf_shard_retention != "cleanup_on_success")
+        throw std::runtime_error("Invalid --ibf-shard-retention (keep/cleanup_on_success)");
+    // Omitted layout in historical implicit-scoring configurations stays single.
+    // New explicit-scoring IBF invocations use the new production layout.
+    if (!o.layout_given && (o.explicit_scoring || o.fdr_control_per_bin) && o.mode == "ibf" && o.save_index.empty() && o.load_index.empty())
+        o.ibf_layout = "sharded";
+    if (o.ibf_build_only && (o.mode == "exact" || o.ibf_shard_retention != "keep" ||
+        (o.ibf_layout == "single" && o.save_index.empty())))
+        throw std::runtime_error("--ibf-build-only requires a persistent IBF destination and retention=keep");
+    if (o.layout_given && o.ibf_layout != "single" && (!o.save_index.empty() || !o.load_index.empty()))
+        throw std::runtime_error("save_index/load_index are single .ibf archives; use --ibf-layout single or --ibf-shard-dir DIRECTORY");
+    if (o.ibf_layout == "single" && !o.ibf_shard_dir.empty())
+        throw std::runtime_error("--ibf-shard-dir requires --ibf-layout sharded or auto");
+    if (o.layout_given && o.ibf_layout != "single" && o.mode == "ibf" && !o.explicit_scoring && !o.fdr_control_per_bin && !o.fdr_option_given) {
+        o.scoring_method = o.per_bin_exact_verify ? "per_bin_verified" : "per_bin_ibf"; o.explicit_scoring = true;
+    }
+    if (o.ibf_shard_dir.empty()) o.ibf_shard_dir = o.output.string() + ".ibf-shards";
     o.legacy_global_budget = !o.explicit_scoring && !o.auto_tune_given && o.mode == "ibf" && !o.fdr_control_per_bin;
     if (o.explicit_scoring && o.scoring_method != "global_ibf" && o.scoring_method != "per_bin_ibf" &&
         o.scoring_method != "per_bin_verified" && o.scoring_method != "global_exact")
@@ -578,7 +623,8 @@ Options parse_options(int argc, char ** argv)
                            (o.per_bin_exact_verify ? "per_bin_verified" : "per_bin_ibf") : "global_ibf";
     // Validation always evaluates the complete candidate pipeline, even when
     // global exact remains the explicitly identified primary score.
-    if ((o.mode == "validate" || o.mode == "calibrate") && o.explicit_scoring) {
+    if ((o.mode == "validate" || o.mode == "calibrate") &&
+        (o.explicit_scoring || (o.layout_given && o.ibf_layout != "single"))) {
         o.fdr_control_per_bin = true; o.per_bin_exact_verify = true;
     }
     if ((o.mode == "exact" && o.scoring_method != "global_exact") ||
@@ -651,6 +697,15 @@ Options parse_options(int argc, char ** argv)
             if (same_path(outputs[i], input)) throw std::runtime_error("Input and output paths must be distinct");
         for (std::size_t j = i + 1; j < outputs.size(); ++j)
             if (same_path(outputs[i], outputs[j])) throw std::runtime_error("Input and output paths must be distinct");
+    }
+    if (o.ibf_layout != "single") {
+        auto directory = fs::weakly_canonical(fs::absolute(o.ibf_shard_dir));
+        for (auto const & output : outputs) {
+            auto absolute = fs::weakly_canonical(fs::absolute(output));
+            auto relative = absolute.lexically_relative(directory);
+            if (!relative.empty() && *relative.begin() != "..")
+                throw std::runtime_error("Output/cache paths must be outside the managed --ibf-shard-dir to protect archives and manifest");
+        }
     }
     return o;
 }
@@ -1241,10 +1296,9 @@ void save_index_file(fs::path const & path, IndexMetadata const & meta, Ibf cons
     }
 }
 
-std::unique_ptr<Ibf> load_index_file(fs::path const & path, IndexMetadata const & expected,
-                                     ReferenceInfo & info, double max_index_memory_gb)
+IndexMetadata validate_index_archive(fs::path const & path, IndexMetadata const & expected,
+                                     std::ifstream & input)
 {
-    std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open index " + path.string());
     std::string magic(index_magic.size(), '\0');
     input.read(magic.data(), static_cast<std::streamsize>(magic.size()));
@@ -1272,6 +1326,14 @@ std::unique_ptr<Ibf> load_index_file(fs::path const & path, IndexMetadata const 
     IndexMetadata stored;
     { cereal::BinaryInputArchive archive(header_input); archive(stored); }
     check_index_metadata(stored, expected);
+    return stored;
+}
+
+std::unique_ptr<Ibf> load_index_file(fs::path const & path, IndexMetadata const & expected,
+                                     ReferenceInfo & info, double max_index_memory_gb)
+{
+    std::ifstream input(path, std::ios::binary);
+    auto stored = validate_index_archive(path,expected,input);
     auto stored_bytes = planned_index_bytes(stored.bin_count,stored.bin_bits);
     if (max_index_memory_gb > 0 && double(stored_bytes) > max_index_memory_gb*1e9)
         throw std::runtime_error("Loaded archive layout exceeds --ibf-max-index-memory-gb; use a larger budget or explicitly rebuild a smaller index");
@@ -1285,6 +1347,8 @@ std::unique_ptr<Ibf> load_index_file(fs::path const & path, IndexMetadata const 
     info.bin_distinct = std::move(stored.bin_distinct);
     return ibf;
 }
+
+#include "sharded_ibf.hpp"
 
 void write_index_metadata_json(fs::path const & index_path, IndexMetadata const & meta,
                                std::string const & index_sha, std::size_t disk_bytes, Options const & options)
@@ -1589,6 +1653,8 @@ void prepare_per_bin_query(Query & q, Options const & o, ReferenceInfo const & i
     }
 }
 
+#include "sharded_query.hpp"
+
 ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed const & reference_bed,
                         std::vector<Query> const & batch)
 {
@@ -1654,7 +1720,13 @@ ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed
 
 #include "candidate_verifier.hpp"
 
-bool schema3(Options const & o) { return o.explicit_scoring || (o.mode == "ibf" && o.fdr_control_per_bin); }
+bool schema3(Options const & o) { return o.layout_given || o.explicit_scoring || (o.mode == "ibf" && o.fdr_control_per_bin); }
+
+char const * global_budget_policy(Options const & o) {
+    if (o.legacy_global_budget || (o.genome_fpr_given && !o.auto_tune_given) ||
+        (o.scoring_method == "global_ibf" && o.ibf_auto_tune == "apply")) return "union_bound";
+    return o.genome_fpr_given ? "requested_only" : "per_bin";
+}
 
 std::string classify(std::size_t matched, std::size_t valid, Options const & o) {
     if (!valid) return "NO_VALID_KMERS";
@@ -1752,6 +1824,8 @@ void compare_validation_bins(Options const & o, std::vector<Query> const & batch
         }
     }
 }
+
+#include "sharded_validation.hpp"
 
 struct LocalStats
 {
@@ -2173,6 +2247,14 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
             if (o.mode != "ibf" && o.fdr_control_per_bin) out << '\t' << candidate_ibf_fp << '\t' << candidate_ibf_fn;
             else out << "\tNA\tNA";
         }
+        if (o.layout_given) {
+            out << '\t' << (o.mode == "exact" ? "none" : o.ibf_layout) << '\t' << o.shard_count
+                << '\t' << o.max_bins_per_ibf << '\t' << o.global_bin_count << '\t' << o.index_manifest
+                << '\t' << o.manifest_sha256 << '\t';
+            write_real(out,o.requested_per_bin_fpr); out << '\t'; write_real(out,o.fpr);
+            out << '\t' << (o.fdr_control_per_bin && o.per_bin_exact_verify ? "true" : "false")
+                << '\t' << global_budget_policy(o);
+        }
         if (o.log_per_query || o.log_level == "debug" || o.log_level == "trace")
             fraglncrna::production_log.event("scoring","stage_progress","query=" + q.id +
                 " method=" + o.scoring_method + " valid=" + std::to_string(q.valid_windows) +
@@ -2393,7 +2475,7 @@ int run(Options o)
     RepeatBed reference_bed = load_repeat_bed(o.reference_repeat_bed, o.max_repeat_intervals);
     RepeatBed query_bed = load_repeat_bed(o.query_repeat_bed, o.max_repeat_intervals);
     std::unique_ptr<IndexedReference> reference_access;
-    if (o.fdr_control_per_bin && o.per_bin_exact_verify && !o.ibf_dry_run) {
+    if (((o.fdr_control_per_bin && o.per_bin_exact_verify) || o.ibf_layout != "single") && o.mode != "exact" && !o.ibf_dry_run) {
         production_log.event("reference-cache","stage_started","preprocessing original bases once; candidate verifier uses random access");
         reference_access = std::make_unique<IndexedReference>(o.reference_cache);
     }
@@ -2404,6 +2486,7 @@ int run(Options o)
         " ambiguous_bases=" + std::to_string(info.ambiguous_bases) + " softmasked_bases=" + std::to_string(info.softmasked_bases) +
         " bins=" + std::to_string(info.bin_count) + " reference_sha256=" + info.sequence_sha256);
     double nominal_any_bin_fpr = o.mode != "exact" ? diagnose_ibf(o,info) : 0;
+    if (o.mode != "exact") plan_shards(o,info);
     if (o.ibf_dry_run) {
         production_log.event("finish","run_completed","dry_run=true; no index allocated or queries processed");
         return 0;
@@ -2427,11 +2510,21 @@ int run(Options o)
     production_log.event("index","stage_started",o.mode == "exact" ? "disabled (exact-only mode)" :
         o.load_index.empty() ? "build (serial insertion)" : "load and check archive metadata/checksums");
     std::unique_ptr<Ibf> ibf;
+    std::unique_ptr<ShardedIbf> shards;
     double index_seconds = 0, index_load_seconds = 0, index_save_seconds = 0;
     std::size_t disk_index_bytes = 0;
     std::string index_sha, index_provenance = "none";
     fs::path index_path = !o.load_index.empty() ? o.load_index : o.save_index;
-    if (!o.load_index.empty())
+    if (o.mode != "exact" && o.ibf_layout == "sharded") {
+        shards = std::make_unique<ShardedIbf>(o,info,reference_bed_sha,reference_bed,*reference_access);
+        index_seconds = shards->build_seconds;
+        index_load_seconds = shards->load_seconds;
+        index_save_seconds = shards->save_seconds;
+        disk_index_bytes = shards->disk_bytes;
+        index_path = shards->manifest_path(); index_sha = sha256_file(index_path);
+        index_provenance = shards->built ? "built" : "loaded";
+    }
+    else if (!o.load_index.empty())
     {
         IndexMetadata expected = make_index_metadata(o, info, reference_bed_sha);
         ibf = load_index_file(o.load_index, expected, info,o.ibf_max_index_memory_gb);
@@ -2457,8 +2550,13 @@ int run(Options o)
         }
     }
     std::size_t index_peak = peak_rss_bytes();
+    o.shard_count = shards ? shards->size() : ibf ? 1 : 0;
+    o.index_manifest = shards ? shards->manifest_path().string() : "";
+    o.manifest_sha256 = shards ? index_sha : "";
+    o.global_bin_count = info.bin_count;
     std::size_t physical_occupied_bits = 0;
     auto physical_start = Clock::now();
+    if (shards) physical_occupied_bits = shards->occupied_bits;
     if (ibf) {
         auto const & raw = ibf->raw_data();
         for (std::size_t word = 0; word < raw.size()/64; ++word) physical_occupied_bits += std::popcount(raw.data()[word]);
@@ -2467,6 +2565,12 @@ int run(Options o)
     production_log.event("index","stage_completed","provenance=" + index_provenance + " bin_bits=" + std::to_string(info.bin_bits) +
         " archive_bytes=" + std::to_string(disk_index_bytes) + " peak_RSS=" + std::to_string(index_peak) +
         " physically_occupied_bits=" + std::to_string(physical_occupied_bits));
+    if (o.ibf_build_only) {
+        production_log.event("finish","run_completed","build_only=true manifest_or_index=" + index_path.string() +
+            " sha256=" + index_sha + " index_bytes=" + std::to_string(disk_index_bytes) +
+            " peak_RSS=" + std::to_string(index_peak) + "; query FASTA was not scanned");
+        return 0;
+    }
     double occupancy_estimate = -1, occupancy_guard_seconds = 0;
     std::size_t occupancy_guard_peak = 0;
     bool occupancy_guard_ran = false;
@@ -2475,7 +2579,7 @@ int run(Options o)
     {
         occupancy_guard_ran = true;
         auto guard_start = Clock::now();
-        occupancy_estimate = observed_ibf_union_estimate(*ibf, info, o);
+        occupancy_estimate = shards ? shards->occupancy_union_estimate() : observed_ibf_union_estimate(*ibf, info, o);
         occupancy_guard_seconds = elapsed(guard_start);
         occupancy_guard_peak = peak_rss_bytes();
         if (occupancy_estimate > o.genome_fpr * (1.0 + 1e-9))
@@ -2484,7 +2588,7 @@ int run(Options o)
     }
     auto fragment_start = Clock::now();
     production_log.event("fragmentation","stage_started","start-assigned bins; k-1 overlap=" + std::to_string(o.k-1));
-    write_fragments(o.fragments, o, info, ibf != nullptr);
+    write_fragments(o.fragments, o, info, ibf != nullptr || shards != nullptr);
     production_log.event("fragmentation","stage_completed","bins=" + std::to_string(info.bin_count) + " report=" + o.fragments.string());
     double fragment_seconds = elapsed(fragment_start);
     std::size_t fragment_peak = peak_rss_bytes();
@@ -2518,6 +2622,8 @@ int run(Options o)
         "\tper_bin_ibf_status\tper_bin_verified_status\tcandidate_window_recall\tcandidate_false_positive_windows"
         "\tcandidate_false_negative_windows\tcandidate_recovery_difference\tbins_rejected_min_hits\tbins_rejected_fraction"
         "\tper_bin_ibf_false_positive_windows\tper_bin_ibf_false_negative_windows";
+    if (o.layout_given) out << "\tibf_layout\tshard_count\tmax_bins_per_ibf\tglobal_bin_count\tindex_manifest"
+        "\tmanifest_sha256\tper_bin_fpr_requested\tper_bin_fpr_effective\tcandidate_exact_verification\tglobal_error_budget_policy";
     out << '\n';
     std::ofstream per_bin_file, per_bin_candidates_file;
     if (o.fdr_control_per_bin)
@@ -2628,20 +2734,30 @@ int run(Options o)
             totals.query_seconds += elapsed(membership_start);
             auto selection_start = Clock::now();
             fraglncrna::parallel_records(count,static_cast<int>(o.actual_threads),[&](std::size_t offset) {
-                prepare_per_bin_query(batch[base+offset],o,info,ibf.get());
+                if (!shards) prepare_per_bin_query(batch[base+offset],o,info,ibf.get());
             });
             totals.candidate_selection_seconds += elapsed(selection_start);
             production_log.progress("query","prepared=" + std::to_string(base+count) + "/" + std::to_string(pending.size()));
         }
         pending.clear();
+        if (shards) {
+            auto membership_start = Clock::now();
+            query_shards(*shards,batch,o,info);
+            totals.query_seconds += elapsed(membership_start);
+        }
         auto prepared = std::move(batch);
         std::size_t from = 0;
         while (from < prepared.size()) {
         batch.clear(); std::size_t pairs = 0;
         do {
-            pairs += prepared[from].positive_bin_pairs;
+            // Only calibration retains window/bin pairs. Production and
+            // validation keep sparse H_b totals, so splitting those blocks by
+            // a nonresident logical-pair count would needlessly rescan exact
+            // truth once per split. Per-query work caps still apply above.
+            pairs += o.mode == "calibrate" ? prepared[from].positive_bin_pairs : 0;
             batch.push_back(std::move(prepared[from++]));
-        } while (from < prepared.size() && prepared[from].positive_bin_pairs <= o.max_ibf_bin_pairs-pairs);
+        } while (from < prepared.size() &&
+                 (o.mode != "calibrate" || prepared[from].positive_bin_pairs <= o.max_ibf_bin_pairs-pairs));
         ++totals.batches;
         ExactResult exact_result;
         if (o.mode != "ibf") {
@@ -2655,11 +2771,12 @@ int run(Options o)
                 " reference_bases_per_scan=" + std::to_string(info.total_bases));
             if (o.mode == "validate" && o.fdr_control_per_bin) {
                 auto bin_start = Clock::now();
-                compare_validation_bins(o,batch,exact_result,*ibf,totals);
+                if (shards) compare_sharded_validation_bins(o,batch,exact_result,*shards,totals);
+                else compare_validation_bins(o,batch,exact_result,*ibf,totals);
                 totals.per_bin_comparison_seconds += elapsed(bin_start);
             }
         }
-        if (reference_access) {
+        if (reference_access && o.fdr_control_per_bin && o.per_bin_exact_verify) {
             production_log.event("verify","stage_started","candidate_intervals only; no FASTA rescan");
             t = Clock::now();
             verify_candidate_intervals(o,info,reference_bed,batch,*reference_access,exact_result);
@@ -2788,8 +2905,9 @@ int run(Options o)
     {
         auto occupancy_start = Clock::now();
         std::vector<std::size_t> occupied(info.bin_count, 0);
-        std::size_t technical_bins = ibf->raw_data().size() / info.bin_bits;
-        for (std::size_t bit = 0; bit < info.bin_bits; ++bit)
+        if (shards) occupied = shards->occupancy;
+        std::size_t technical_bins = ibf ? ibf->raw_data().size() / info.bin_bits : 0;
+        if (ibf) for (std::size_t bit = 0; bit < info.bin_bits; ++bit)
             for (std::size_t bin = 0; bin < info.bin_count; ++bin)
                 occupied[bin] += ibf->raw_data()[bit * technical_bins + bin];
         occupied_bits_total = std::accumulate(occupied.begin(), occupied.end(), std::size_t{0});
@@ -2832,6 +2950,10 @@ int run(Options o)
     rusage cpu_usage{}; getrusage(RUSAGE_SELF,&cpu_usage);
     double user_cpu = cpu_usage.ru_utime.tv_sec + cpu_usage.ru_utime.tv_usec/1e6;
     double system_cpu = cpu_usage.ru_stime.tv_sec + cpu_usage.ru_stime.tv_usec/1e6;
+    std::map<std::string,std::uint64_t> process_io;
+    std::ifstream io("/proc/self/io");
+    std::string io_key; std::uint64_t io_value;
+    while (io >> io_key >> io_value) process_io[io_key] = io_value;
     metrics << std::defaultfloat << std::setprecision(17)
             << "{\n  \"schema_version\": " << (schema3(o) ? 3 : 2) << ",\n  \"software\": \"lncrna_mers_v2\",\n"
             << "  \"software_version\": \"2-preview.3\",\n"
@@ -2889,7 +3011,7 @@ int run(Options o)
             << "  \"k\": " << o.k << ",\n  \"fragment_size\": " << o.fragment_size << ",\n"
             << "  \"bin_count\": " << info.bin_count << ",\n"
             << "  \"hash_functions\": " << o.hash_functions << ",\n"
-            << "  \"index_format_version\": " << (ibf ? 3 : 0) << ",\n"
+            << "  \"index_format_version\": " << (ibf || shards ? 3 : 0) << ",\n"
             << "  \"index_provenance\": " << json_string(index_provenance) << ",\n"
             << "  \"index_path\": " << json_string(index_path.string()) << ",\n"
             << "  \"index_file_sha256\": " << json_string(index_sha) << ",\n"
@@ -2923,7 +3045,7 @@ int run(Options o)
             << "  \"physical_occupied_bits_all_modes\": " << physical_occupied_bits << ",\n"
             << "  \"physical_occupancy_seconds\": " << physical_occupancy_seconds << ",\n"
             << "  \"distinct_bin_kmers_sum\": ";
-    if (ibf) metrics << std::accumulate(info.bin_distinct.begin(), info.bin_distinct.end(), std::size_t{0});
+    if (ibf || shards) metrics << std::accumulate(info.bin_distinct.begin(), info.bin_distinct.end(), std::size_t{0});
     else metrics << "null";
     metrics << ",\n  \"occupied_bin_bits_sum\": ";
     if (o.mode == "calibrate") metrics << occupied_bits_total; else metrics << "null";
@@ -3034,7 +3156,27 @@ int run(Options o)
         if (!first_status) metrics << ',';
         metrics << json_string(label) << ':' << count; first_status = false;
     }
-    metrics << "}\n}\n";
+    metrics << "},\n\"ibf_layout\":" << json_string(o.mode == "exact" ? "none" : o.ibf_layout)
+        << ",\n\"shard_count\":" << o.shard_count
+        << ",\n\"max_bins_per_ibf\":" << o.max_bins_per_ibf
+        << ",\n\"global_bin_count\":" << info.bin_count
+        << ",\n\"index_manifest\":" << json_string(o.index_manifest)
+        << ",\n\"manifest_sha256\":" << json_string(o.manifest_sha256)
+        << ",\n\"per_bin_fpr_requested\":" << o.requested_per_bin_fpr
+        << ",\n\"per_bin_fpr_effective\":" << o.fpr
+        << ",\n\"candidate_exact_verification\":" << (o.fdr_control_per_bin && o.per_bin_exact_verify ? "true" : "false")
+        << ",\n\"shards_built\":" << (shards ? shards->built : 0)
+        << ",\n\"shards_reused\":" << (shards ? shards->reused : 0)
+        << ",\n\"shard_query_loads\":" << (shards ? shards->query_loads : 0)
+        << ",\n\"shard_query_bytes_read\":" << (shards ? shards->query_bytes_read : 0)
+        << ",\n\"shard_query_load_seconds\":" << (shards ? shards->query_load_seconds : 0)
+        << ",\n\"max_resident_shards\":" << (shards ? shards->max_resident() : 0)
+        << ",\n\"process_io_read_bytes\":" << process_io["read_bytes:"]
+        << ",\n\"process_io_write_bytes\":" << process_io["write_bytes:"]
+        << ",\n\"process_io_read_characters\":" << process_io["rchar:"]
+        << ",\n\"process_io_write_characters\":" << process_io["wchar:"]
+        << ",\n\"query_scheduler\":" << json_string(shards ? "bounded_block_major_two_pass" : "single_resident")
+        << ",\n\"global_error_budget_policy\":" << json_string(global_budget_policy(o)) << "\n}\n";
     metrics.close();
     if (!metrics) throw std::runtime_error("Failed finalizing metrics JSON; output is incomplete");
     if (schema3(o)) {
@@ -3043,6 +3185,7 @@ int run(Options o)
         production_log.event("output","stage_completed","rows=" + std::to_string(totals.queries) +
             " tsv_bytes=" + std::to_string(fs::file_size(o.output)) + " sha256=" + sha256_file(o.output));
     }
+    if (shards) shards->cleanup_success();
     production_log.event("finish","run_completed","Wrote " + std::to_string(totals.queries) + " query rows; total_seconds=" +
         std::to_string(elapsed(run_start)) + " peak_RSS=" + std::to_string(peak_rss_bytes()) +
         " warnings=" + std::to_string(production_log.warnings) + " errors=" + std::to_string(production_log.errors) +

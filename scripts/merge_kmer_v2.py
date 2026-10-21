@@ -47,6 +47,19 @@ def next_row(reader, path, expected_index):
     return row
 
 
+def check_layout_provenance(row, manifest):
+    """Layout may differ across references, but each row must match its run."""
+    for key in ("ibf_layout", "shard_count", "max_bins_per_ibf", "global_bin_count",
+                "index_manifest", "manifest_sha256", "global_error_budget_policy"):
+        if key in row and str(manifest.get(key, "")) != row[key]:
+            raise ValueError(f"TSV and manifest layout provenance differ: {key}")
+    for key in ("per_bin_fpr_requested", "per_bin_fpr_effective"):
+        if key in row and float(row[key]) != manifest.get(key):
+            raise ValueError(f"TSV and manifest FPR provenance differ: {key}")
+    if "candidate_exact_verification" in row and row["candidate_exact_verification"] != str(manifest.get("candidate_exact_verification")).lower():
+        raise ValueError("TSV and manifest verification provenance differ")
+
+
 def main():
     started = time.monotonic()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -107,6 +120,7 @@ def main():
                 raise ValueError("TSV and manifest schema versions differ")
             if schema == 3 and (first.get("scoring_method") != scoring or first.get("primary_match_source") != primary_source):
                 raise ValueError("TSV and manifest scoring provenance differ")
+            check_layout_provenance(first, manifest)
             settings = tuple(first[field] for field in COMPARABLE)
             if primary_source == "ibf" and manifest.get("target_genome_wide_fpr") is not None:
                 ibf_target = (manifest.get("target_genome_wide_fpr"),
@@ -120,6 +134,7 @@ def main():
             else:
                 settings += (first["configured_per_bin_fpr"],)
             if schema == 3:
+                settings += (manifest.get("global_error_budget_policy", "legacy_unspecified"),)
                 settings += tuple(manifest.get(key) for key in ("per_bin_min_hits", "per_bin_min_fraction",
                     "per_bin_top_k", "per_bin_max_locus_gap", "per_bin_exact_verify", "max_locus_span", "mask_target"))
             if common_settings is None:
@@ -163,6 +178,7 @@ def main():
                 if (tuple(row[field] for field in COMPARABLE) +
                         (row["configured_per_bin_fpr"],)) != bundle["local_settings"]:
                     raise ValueError(f"Settings change within {bundle['path']}")
+                check_layout_provenance(row, manifest)
                 writer.writerow(row)
                 aggregate = aggregates[bundle["reference_id"]]
                 aggregate["query_count"] += 1
