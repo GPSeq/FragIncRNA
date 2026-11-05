@@ -1,5 +1,6 @@
 #include "config.hpp"
 #include "fragmenter.hpp"
+#include "kmer_windows.hpp"
 #include "logger.hpp"
 #include "query_processor.hpp"
 #include "reference_index.hpp"
@@ -81,6 +82,7 @@ void test_fragmenter_returns_overlapping_fragments()
 
     Config cfg;
     cfg.fragment_size = 5;
+    cfg.kmer_size = 4;
 
     FragmenterDna5 fragmenter{cfg};
     auto fragments = fragmenter.fragment_reference(fasta, "ref1");
@@ -102,6 +104,7 @@ void test_fragmenter_writes_fragment_fasta_when_enabled()
 
     Config cfg;
     cfg.fragment_size = 4;
+    cfg.kmer_size = 4;
     cfg.store_fragments = true;
     cfg.output_dir = out_dir;
 
@@ -317,7 +320,7 @@ void test_query_processor_writes_matching_kmer_hit_file()
 
     std::vector<seqan3::dna5_vector> fragments{
         seqan3::dna5_vector{"ACGTA"_dna5},
-        seqan3::dna5_vector{"CGTAC"_dna5}
+        seqan3::dna5_vector{"TTAAC"_dna5}
     };
 
     ReferenceIndexDna5 index{"ref6", fragments, cfg};
@@ -326,14 +329,52 @@ void test_query_processor_writes_matching_kmer_hit_file()
 
     auto kmer_hits = read_text(temp_dir / "ref6_kmers.tsv");
     expect(kmer_hits == "query_index\tkmer_indices\tkmer_counts\n"
-                        "0\t1/2/3/4\t1/2/2/1\n",
+                        "0\t1/2/3/4\t1/1/1/1\n",
            "unexpected k-mer hit file contents");
 
     auto unique_hits = read_text(temp_dir / "unique_mers" / "ref6.tsv");
     expect(unique_hits == "query_index\tibf_unique_kmer\n"
                           "0\tACG\n"
+                          "0\tCGT\n"
+                          "0\tGTA\n"
                           "0\tTAC\n",
            "unexpected unique k-mer file contents");
+}
+
+void test_flat_window_boundaries_and_ambiguity()
+{
+    auto temp_dir = make_temp_dir("lncrna_mers_test_flat_windows");
+    auto fasta = temp_dir / "reference.fa";
+    write_fasta(fasta, "chr", "AAAACCCCNNNNGGGG");
+    Config cfg;
+    cfg.kmer_size = 5;
+    cfg.fragment_size = 6;
+    cfg.ibf.hash_functions = 3;
+    cfg.ibf.fpr = 0.01;
+    FragmenterDna5 fragmenter{cfg};
+    auto fragments = fragmenter.fragment_reference(fasta, "chr");
+    expect(to_string(fragments[1]) == "AACCCC", "k-1 overlap did not cover boundary");
+    ReferenceIndexDna5 index{"chr", fragments, cfg};
+    auto boundary = index.count_query_kmer_hits(seqan3::dna5_vector{"ACCCC"_dna5});
+    expect(boundary.size() == 1 && boundary[0] > 0, "boundary k-mer was lost");
+    auto no_join = index.count_query_kmer_hits(seqan3::dna5_vector{"AAANNCCCC"_dna5});
+    expect(no_join.size() == 5 && no_join[0] == 0 && no_join[4] == 0,
+           "N-containing query windows must retain positions and remain unmatched");
+    cfg.ibf.multi_indexing = true;
+    ReferenceIndexDna5 multi{"chr_multi", fragments, cfg};
+    auto multi_boundary = multi.count_query_kmer_hits(seqan3::dna5_vector{"ACCCC"_dna5});
+    expect(multi_boundary.size() == 1 && multi_boundary[0] > 0,
+           "multi-IBF lost a fragment-boundary k-mer");
+    auto multi_ambiguous = multi.count_query_kmer_hits(seqan3::dna5_vector{"AAANNCCCC"_dna5});
+    expect(multi_ambiguous.size() == 5 &&
+           std::all_of(multi_ambiguous.begin(), multi_ambiguous.end(), [](auto count) { return count == 0; }),
+           "multi-IBF must skip every N-containing window");
+    fraglncrna::RollingDnaWindow maker{32};
+    for (std::size_t i = 0; i < 31; ++i) expect(!maker.push('A'), "early k=32 window");
+    auto last = maker.push('T');
+    expect(last && last->valid, "k=32 window missing");
+    auto invalid = maker.push('N');
+    expect(invalid && !invalid->valid, "ambiguous window should be invalid");
 }
 
 } // namespace
@@ -354,6 +395,7 @@ int main()
         test_config_loader_rejects_missing_required_key();
         test_multi_ibf_stores_one_file_per_fragment_and_counts_hits();
         test_query_processor_writes_matching_kmer_hit_file();
+        test_flat_window_boundaries_and_ambiguity();
     }
     catch (std::exception const & ex)
     {

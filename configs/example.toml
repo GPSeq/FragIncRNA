@@ -1,0 +1,176 @@
+# Complete configuration for lncrna_mers_v2.
+# Run from the repository root:
+#   build/lncrna_mers_v2 --config configs/example.toml
+# Command-line options after --config override values in this file.
+# Paths are resolved from the working directory, as with the CLI.
+# This runnable example uses the small checked-in FASTAs. For the supplied
+# chr1/Gencode data, set reference/queries, k=15, fragment_size=8000,
+# local_window=8000 (or comment it out), and keep mode="exact". Disable the
+# optional exact-hit reports if their occurrence cap is too small.
+# Legacy lncrna_mers uses the older configs/config_*.toml format; HIBF is
+# outside the v2 path.
+
+[v2]
+# Required FASTA inputs and main TSV. Plain FASTA and .gz FASTA are accepted.
+reference = "tests/fixtures/kmer_v2/reference.fa"
+queries = "tests/fixtures/kmer_v2/queries.fa"
+output = "/tmp/fraglncrna-v2-example.tsv"
+# Empty metrics selects <output>.metrics.json; every run records phase time/RSS.
+metrics = ""
+
+# K-mer matching. k is 1..32. Windows with non-ACGT bases are skipped unless
+# ambiguity = "error". canonical treats reverse complements as one key;
+# forward uses only the query orientation; both checks both orientations.
+k = 4
+strand = "canonical"              # canonical | forward | both
+ambiguity = "skip"               # skip | error
+mode = "exact"                   # exact | validate | calibrate | ibf
+
+# Start-assigned bins are fragment_size bases wide. The sequence needed for a
+# bin extends k-1 bases past its end when possible; windows are counted once.
+fragment_size = 4
+fragments = "/tmp/fraglncrna-v2-fragments.tsv"  # "" disables this report
+
+# IBF settings used by ibf, validate, and calibrate. --fpr is the maximum
+# per-bin design FPR. Per-bin production keeps this cap. Historical implicit
+# global mode budgets 0.01/bin_count only without an explicit tuner setting.
+# Explicit genome_fpr without an explicit tuner applies a global budget.
+# With explicit recommend/off a genome target is requested-only. Keep this
+# line commented in exact mode, which has no IBF. A loaded index must match
+# the effective per-bin FPR and all other recorded compatibility metadata.
+hash_functions = 3              # SeqAn flat IBF permits 1..5
+fpr = 0.01
+# genome_fpr = 0.01             # IBF modes only; 0 < value <= 0.5
+save_index = ""                  # path.ibf to build/save, or "" to disable
+load_index = ""                  # path.ibf to load, mutually exclusive above
+
+# Optional per-bin coherence screening. This requested flag name is historical:
+# it does not guarantee statistical false discovery rate control. The score is
+# H_b / valid query windows for each original genomic bin. Candidate bins need
+# at least both min_hits and min_fraction; defaults are heuristic, not trained.
+# Exact verification fetches selected intervals from a checksum-validated cache.
+# Set mode = "ibf" and per_bin_exact_verify = true for production scoring;
+# in that setting the historical high-FPR index can be reused with fpr = 0.01.
+# With mode = "validate", a matching saved high- or low-FPR index can be reused.
+fdr_control_per_bin = false
+per_bin_min_hits = 2
+per_bin_min_fraction = 0.05
+per_bin_top_k = 64            # cap candidate bins after deterministic ranking
+per_bin_max_locus_gap = 50000 # cluster selected bins on the same contig
+per_bin_exact_verify = true
+per_bin_output = ""          # default: <output>.per_bin.tsv when enabled;
+                             # also writes <per_bin_output>.candidates.tsv
+
+# Query classification thresholds. A threshold_table overrides both numeric
+# values and requires a distinct evaluation_control_set label. The table must
+# have columns reference_id, k, basic_threshold, strict_threshold,
+# training_control_set. Empty strings disable table-driven thresholds.
+basic_threshold = 0.75
+strict_threshold = 0.85
+threshold_table = ""
+evaluation_control_set = ""
+
+# Repeat policies: include retains annotated windows, exclude removes windows
+# touching lowercase/BED masking on mask_target sides, annotate retains them
+# and writes a query-origin class report. BED is 0-based, half-open BED3/4
+# with optional fourth-column class; empty paths disable that input.
+repeat = "annotate"              # include | exclude | annotate
+mask_target = "both"             # query | reference | both (for exclude)
+reference_repeat_bed = ""
+query_repeat_bed = ""
+repeat_classes = "/tmp/fraglncrna-v2-query-classes.tsv"
+# Exact reference-side hit classes are separate from query-origin classes.
+# Requires repeat = "annotate" and an exact-capable mode. Without a reference
+# BED, the reference classes are NONE and possibly SOFTMASK.
+reference_hit_classes = "/tmp/fraglncrna-v2-reference-hit-classes.tsv"
+max_repeat_intervals = 5000000
+
+# Exact hit positions are zero-based half-open, with query-relative strand.
+# Empty positions disables occurrence output. Exact hit storage is bounded by
+# max_position_rows PER BATCH, even when only localization/class output is on.
+positions = "/tmp/fraglncrna-v2-positions.tsv.gz"
+max_position_rows = 1000000
+
+# Fixed and sliding localization. A nonzero local_window must be at least k.
+# The fixture uses 4 bases; remove/comment this key to disable localization.
+local_window = 4
+# Exact hits can be clustered into ranked candidate loci. Empty path disables.
+discover_loci = "/tmp/fraglncrna-v2-loci.tsv"
+locus_gap = 8000
+max_locus_span = 1000000
+max_locus_rows = 100000
+
+# Optional BED4/5 expected loci: contig, start, end, query_id, [label].
+# When set, expected_loci_output defaults to <output>.expected_loci.tsv if "".
+expected_loci_bed = ""
+expected_loci_output = ""
+max_expected_loci = 1000000
+
+# Optional exact-coordinate exon blocks. Header: query_id, query_start,
+# query_end, contig, ref_start, ref_end, strand (tab-separated).
+exon_blocks = ""
+max_exon_blocks = 1000000
+
+# Resource limits and calibration. Batches bound query memory but each exact
+# batch rescans the reference. Calibrate writes per-bin exact/IBF diagnostics;
+# uncomment calibration_bins only after changing mode = "calibrate".
+batch_windows = 100000
+max_query_bases = 50000000
+max_ibf_bin_pairs = 10000000
+max_calibration_pairs = 10000000
+# calibration_bins = "/tmp/fraglncrna-v2-bins.tsv"
+
+# Explicit scoring selects schema 3. Omit for legacy schema-2 exact/global
+# invocations. With mode=ibf and per-bin enabled, the default is verified-local.
+# scoring_method = "global_exact" # global_ibf|per_bin_ibf|per_bin_verified|global_exact
+threads = 1                     # explicit value wins over OMP_NUM_THREADS
+reference_cache = ""            # reusable normalized bases; empty uses a temporary copy
+log_file = ""                   # default <output>.log plus .log.jsonl
+log_level = "info"              # trace|debug|info|warning|error|off
+log_to_console = true
+log_per_query = false
+log_per_bin = false
+progress_interval_seconds = 10
+progress_every_queries = 1000
+ibf_auto_tune = "recommend"      # off|recommend|apply; per-bin settings retained
+ibf_max_index_memory_gb = 0      # decimal GB, 0 = no explicit index cap
+ibf_fail_on_unsafe_settings = false
+ibf_tuning_report = ""          # <output>.ibf_tuning.json
+ibf_dry_run = false
+
+# Physical IBF layout. This example is exact-only; no IBF is allocated.
+# Explicit single preserves legacy archive workflow. For production use
+# configs/sharded_ibf_k20.toml (sharded + per_bin_verified).
+ibf_layout = "single"           # sharded | single | auto
+max_bins_per_ibf = 1000          # real bins; physical bins are padded to 64
+ibf_shard_dir = ""              # sharded/auto only; empty defaults beside output
+ibf_shard_storage = "disk"      # disk: one resident IBF; memory: all, guarded
+ibf_shard_retention = "keep"     # keep | cleanup_on_success (owned files only)
+ibf_shard_reuse = true
+ibf_resume = true
+
+ibf_build_only = false           # true builds a durable index and exits before query reading
+
+# Directory mode replaces reference/output; one FASTA file is one assembly.
+# reference_dir = "genomes"
+# output_dir = "results_multi_genome"
+# output_name_template = "results.tsv"
+# reference_id = "optional_explicit_single_reference_id"
+# reference_recursive = false
+# continue_on_reference_error = false
+# Window reports are opt-in. max_window_rows caps actual streamed positions.
+# window_output = "windows.tsv.gz"
+# window_scope = "all"
+# window_query_ids = "query_ids.txt"
+# window_include_sequence = false
+# kmer_fasta_output = "kmers.fa.gz"
+# max_window_rows = 10000000
+# Cache budgets are MiB, bounded further by physical RAM. Zero disables.
+# ibf_shard_cache_mb = 128
+# reference_page_cache_mb = 64
+
+# Explicit optional archive copy for slow mounted storage (disabled by default).
+# ibf_local_cache_dir = "/tmp/frag-index-read-cache"
+# ibf_local_cache_max_mb = 8192
+
+# candidate_prefilter = true
