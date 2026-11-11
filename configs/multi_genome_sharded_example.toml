@@ -1,0 +1,44 @@
+[v2]
+# Each recognized FASTA file is ONE ASSEMBLY. Combine per-chromosome files first.
+reference_dir = "rerun_test/genomes"
+queries = "rerun_test/gencode.v49.lncRNA_transcripts.fa"
+output_dir = "results_multi_genome_optimized"
+output_name_template = "results.tsv"
+reference_recursive = false
+continue_on_reference_error = false
+mode = "ibf"
+scoring_method = "per_bin_verified"
+k = 20
+strand = "canonical"
+ambiguity = "skip"
+fragment_size = 80000
+hash_functions = 3
+fpr = 0.01
+ibf_layout = "sharded"
+max_bins_per_ibf = 1000
+# In directory mode this is an index ROOT, not a single assembly directory.
+ibf_shard_dir = "/tmp/frag-optimized-multi-indexes"
+ibf_shard_storage = "disk"
+ibf_shard_retention = "keep"
+ibf_shard_reuse = true
+ibf_resume = true
+ibf_shard_cache_mb = 128
+reference_page_cache_mb = 64
+per_bin_min_hits = 2
+per_bin_min_fraction = 0.02
+per_bin_top_k = 256
+per_bin_max_locus_gap = 50000
+per_bin_exact_verify = true
+threads = 15
+batch_windows = 500000
+repeat = "include"
+basic_threshold = 0.75
+strict_threshold = 0.85
+log_per_query = false
+log_per_bin = false
+# Directory sidecars accept BASENAMES, written inside each assembly/k directory.
+# window_output = "windows.tsv.gz"
+# window_scope = "verified"
+# window_include_sequence = true
+# max_window_rows = 10000000
+# reference_cache = "/tmp/frag-reference-cache-root"

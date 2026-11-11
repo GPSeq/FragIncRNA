@@ -1,6 +1,17 @@
 kmer_results/ibf_new/qc/plots/kmer_qc_edge_cases.tsv
 kmer_results/ibf_new/qc/kmer_transcript_pass_counts_by_k.tsv
 build/
+build-production*/
+rerun_test/
+results/per_bin_production_validation/*.ibf
+results/per_bin_production_validation/*.bases
+results/per_bin_production_validation/reference*.fa
+results/per_bin_production_validation/**/*.ibf
+results/per_bin_production_validation/**/*.ibf.partial.*
+results/per_bin_production_validation/**/*.bases
+results/per_bin_production_validation/**/*.bases.partial.*
+results/per_bin_production_validation/**/reference*.fa
+results/per_bin_production_validation/**/reference*.partial
 __pycache__/
 *.pyc
 data/
