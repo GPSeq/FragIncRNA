@@ -1,5 +1,14 @@
 # FragIncRNA
 
+[![CMake tests](https://github.com/GPSeq/FragIncRNA/actions/workflows/cmake-single-platform.yml/badge.svg?branch=main)](https://github.com/GPSeq/FragIncRNA/actions/workflows/cmake-single-platform.yml)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)
+![CMake](https://img.shields.io/badge/CMake-%E2%89%A53.20-064F8C?logo=cmake&logoColor=white)
+![SeqAn3](https://img.shields.io/badge/SeqAn3-3.4.1-2E7D32)
+![OpenMP](https://img.shields.io/badge/OpenMP-parallel-5C2D91)
+![Python](https://img.shields.io/badge/Python-%E2%89%A53.11-3776AB?logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 FragIncRNA measures how much of a long non-coding RNA (lncRNA) transcript is
 recovered, k-mer by k-mer, in a reference genome assembly. Reference genomes
 are split into fixed-size fragments (bins), indexed with an Interleaved Bloom
@@ -83,6 +92,7 @@ Section 9).
 | `lncrna_shared_regions/` | Summary of lncRNA regions shared across assemblies |
 | `test_data/` | Very small FASTA files for a smoke test |
 | `tests/` | Unit and integration tests (run with CTest) |
+| `docs/` | Complete reference of all output files, columns and metrics |
 | `img/` | Overview figure |
 
 ---
@@ -616,6 +626,9 @@ the event `run_completed`.
 
 Conventions: values are tab-separated; `NA` means *not available*, not zero;
 fractions range from 0 to 1; coordinates are 0-based and half-open.
+
+The complete description of every column, JSON key and log field is in
+`docs/OUTPUT_REFERENCE.md`.
 
 ### 10.3 Candidate table (`O.per_bin.tsv.candidates.tsv`)
 

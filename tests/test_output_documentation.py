@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Exercise all v2 report writers and check README coverage of emitted names.
+"""Exercise all v2 report writers and check that emitted names are documented
+in README.md or docs/OUTPUT_REFERENCE.md.
 
 Run explicitly: python3 tests/test_output_documentation.py build-production/lncrna_mers_v2
 This is a documentation contract check, not a biological benchmark.
@@ -15,12 +16,12 @@ import tempfile
 
 repo = pathlib.Path(__file__).resolve().parents[1]
 program = pathlib.Path(sys.argv[1]).resolve()
-readme = (repo / "README.md").read_text()
+readme = (repo / "README.md").read_text() + (repo / "docs" / "OUTPUT_REFERENCE.md").read_text()
 documented = set(re.findall(r"`([^`\n]+)`", readme))
 seen_columns, seen_metrics = set(), set()
 
 def check_name(name, context):
-    assert name in documented, f"README lacks exact field {name!r} from {context}"
+    assert name in documented, f"README.md/docs/OUTPUT_REFERENCE.md lack exact field {name!r} from {context}"
 
 with tempfile.TemporaryDirectory(prefix="frag-output-docs-") as directory:
     root = pathlib.Path(directory)
@@ -75,4 +76,4 @@ with tempfile.TemporaryDirectory(prefix="frag-output-docs-") as directory:
     assert rows["q1"]["exon_eligible_windows"] == rows["q1"]["exon_matched_windows"] == "5"
     assert rows["q1"]["verification_scope"] == "candidate_intervals"
     assert rows["q1"]["exact_global_recovery"] == "1.000000"
-print(f"README covers {len(seen_columns)} emitted TSV column names and {len(seen_metrics)} metrics/tuning keys; all optional v2 report writers exercised")
+print(f"Documentation covers {len(seen_columns)} emitted TSV column names and {len(seen_metrics)} metrics/tuning keys; all optional v2 report writers exercised")
