@@ -34,10 +34,13 @@ jobs:
               -e "s|@DOXYGEN_HAVE_DOT@|YES|g" \
               docs/Doxyfile.in > Doxyfile
 
+      # Doxygen 1.9.x cannot create nested output directories itself.
       - name: Build documentation
         run: |
-          doxygen Doxyfile 2> doxygen-warnings.log
-          cat doxygen-warnings.log
+          set -o pipefail
+          mkdir -p build/docs
+          doxygen --version
+          doxygen Doxyfile 2>&1 | tee doxygen.log
           test -f build/docs/html/index.html
 
       - name: Upload Pages artifact
