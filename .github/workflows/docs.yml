@@ -1,0 +1,59 @@
+name: Documentation
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Doxygen and Graphviz
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+
+      # Fill in the CMake placeholders of docs/Doxyfile.in without configuring
+      # the C++ project (which would download SeqAn3).
+      - name: Generate Doxyfile
+        run: |
+          sed -e "s|@PROJECT_SOURCE_DIR@|${GITHUB_WORKSPACE}|g" \
+              -e "s|@DOXYGEN_OUTPUT_DIR@|${GITHUB_WORKSPACE}/build/docs|g" \
+              -e "s|@DOXYGEN_HAVE_DOT@|YES|g" \
+              docs/Doxyfile.in > Doxyfile
+
+      - name: Build documentation
+        run: |
+          doxygen Doxyfile 2> doxygen-warnings.log
+          cat doxygen-warnings.log
+          test -f build/docs/html/index.html
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/html
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

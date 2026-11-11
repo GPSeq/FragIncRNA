@@ -7,6 +7,7 @@
 ![OpenMP](https://img.shields.io/badge/OpenMP-parallel-5C2D91)
 ![Python](https://img.shields.io/badge/Python-%E2%89%A53.11-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black)
+[![Docs: Doxygen](https://github.com/GPSeq/FragIncRNA/actions/workflows/docs.yml/badge.svg?branch=main)](https://gpseq.github.io/FragIncRNA/)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 FragIncRNA measures how much of a long non-coding RNA (lncRNA) transcript is
@@ -23,20 +24,48 @@ final score is free of Bloom-filter false positives.
 
 ## Contents
 
-1. Method overview
-2. Repository layout
-3. Installation
-4. Input data
-5. Quick start
-6. Configuring a run
-7. Arguments
-8. Scoring methods and query classification
-9. False-positive and error-rate computation
-10. Output files
-11. Running many genomes and k values
-12. Legacy executable `lncrna_mers`
-13. Practical recommendations
-14. License
+1. [Method overview](#1-method-overview)
+2. [Repository layout](#2-repository-layout)
+3. [Installation](#3-installation)
+    - [3.1 Requirements](#31-requirements)
+    - [3.2 Build](#32-build)
+    - [3.3 CMake options](#33-cmake-options)
+    - [3.4 Troubleshooting the build](#34-troubleshooting-the-build)
+    - [3.5 Test the installation](#35-test-the-installation)
+    - [3.6 API documentation (Doxygen)](#36-api-documentation-doxygen)
+4. [Input data](#4-input-data)
+    - [4.1 Required inputs](#41-required-inputs)
+    - [4.2 Optional annotation inputs](#42-optional-annotation-inputs)
+5. [Quick start](#5-quick-start)
+6. [Configuring a run](#6-configuring-a-run)
+    - [6.1 Configuration file or command line](#61-configuration-file-or-command-line)
+    - [6.2 Where to set input and output paths](#62-where-to-set-input-and-output-paths)
+    - [6.3 Minimal production configuration](#63-minimal-production-configuration)
+7. [Arguments](#7-arguments)
+    - [7.1 Input and output](#71-input-and-output)
+    - [7.2 k-mer and fragment settings](#72-k-mer-and-fragment-settings)
+    - [7.3 Analysis mode and scoring](#73-analysis-mode-and-scoring)
+    - [7.4 Bloom filter (IBF)](#74-bloom-filter-ibf)
+    - [7.5 Candidate screening and verification](#75-candidate-screening-and-verification)
+    - [7.6 Repeats and annotation reports](#76-repeats-and-annotation-reports)
+    - [7.7 Resources and logging](#77-resources-and-logging)
+8. [Scoring methods and query classification](#8-scoring-methods-and-query-classification)
+    - [8.1 Definitions](#81-definitions)
+    - [8.2 Scoring methods](#82-scoring-methods)
+    - [8.3 Classification](#83-classification)
+9. [False-positive and error-rate computation](#9-false-positive-and-error-rate-computation)
+    - [9.1 Per-bin design FPR and filter size](#91-per-bin-design-fpr-and-filter-size)
+    - [9.2 Genome-wide (any-bin) FPR](#92-genome-wide-any-bin-fpr)
+    - [9.3 Measured error rates (validate and calibrate modes)](#93-measured-error-rates-validate-and-calibrate-modes)
+    - [9.4 What these rates are not](#94-what-these-rates-are-not)
+10. [Output files](#10-output-files)
+    - [10.1 File inventory](#101-file-inventory)
+    - [10.2 Main result table (most important columns)](#102-main-result-table-most-important-columns)
+    - [10.3 Candidate table (`O.per_bin.tsv.candidates.tsv`)](#103-candidate-table-oper_bintsvcandidatestsv)
+11. [Running many genomes and k values](#11-running-many-genomes-and-k-values)
+12. [Legacy executable `lncrna_mers`](#12-legacy-executable-lncrna_mers)
+13. [Practical recommendations](#13-practical-recommendations)
+14. [License](#14-license)
 
 ---
 
@@ -74,7 +103,7 @@ following steps:
 Optional validation and calibration modes additionally scan the whole
 reference exactly, so the IBF result can be compared against ground truth and
 empirical false-positive rates can be measured (see
-Section 9).
+[Section 9](#9-false-positive-and-error-rate-computation)).
 
 ---
 
@@ -138,7 +167,7 @@ This creates two executables:
 | Executable | Purpose |
 |---|---|
 | `build/lncrna_mers_v2` | **Main tool.** Recovery scoring, exact verification, validation and calibration |
-| `build/lncrna_mers` | Legacy tool (Section 12); kept for reproducibility of earlier results |
+| `build/lncrna_mers` | Legacy tool ([Section 12](#12-legacy-executable-lncrna_mers)); kept for reproducibility of earlier results |
 
 ### 3.3 CMake options
 
@@ -181,7 +210,9 @@ cmake -S . -B build
 cmake --build build --target docs
 ```
 
-Open `build/docs/html/index.html` in a browser. The documentation contains
+Open `build/docs/html/index.html` in a browser. The documentation of the
+`main` branch is also published online at
+[gpseq.github.io/FragIncRNA](https://gpseq.github.io/FragIncRNA/). The documentation contains
 this README as start page, the complete output reference, and all classes,
 functions and source files. Graphviz (`dot`) is optional and adds class and
 include diagrams. Disable the target with `-DLNCRNA_MERS_BUILD_DOCS=OFF`.
@@ -378,7 +409,7 @@ name is identical with dashes replaced by underscores.
 | Argument | Description |
 |---|---|
 | `--mode exact\|ibf\|validate\|calibrate\|export-kmers` | See table below [validate] |
-| `--scoring-method global_exact\|global_ibf\|per_bin_ibf\|per_bin_verified` | Which evidence defines the primary score (Section 8) |
+| `--scoring-method global_exact\|global_ibf\|per_bin_ibf\|per_bin_verified` | Which evidence defines the primary score ([Section 8](#8-scoring-methods-and-query-classification)) |
 | `--basic-threshold X` | Minimum recovery fraction for `PASS_BASIC` [0.75] |
 | `--strict-threshold X` | Minimum recovery fraction for `PASS_STRICT` [0.85] |
 | `--threshold-table FILE` | Per reference / k thresholds; overrides the two values above |
@@ -398,7 +429,7 @@ name is identical with dashes replaced by underscores.
 |---|---|
 | `--hash-functions N` | Number of hash functions, 1–5 [3] |
 | `--fpr X` | Target false-positive rate **per bin**, 0 < X ≤ 0.5 [0.01] |
-| `--genome-fpr X` | Target false-positive rate over **all bins** of the genome, 0 < X ≤ 0.5 (Section 9.2) |
+| `--genome-fpr X` | Target false-positive rate over **all bins** of the genome, 0 < X ≤ 0.5 ([Section 9.2](#92-genome-wide-any-bin-fpr)) |
 | `--ibf-layout sharded\|single\|auto` | Several IBF shards, one IBF, or automatic choice [sharded for new runs] |
 | `--max-bins-per-ibf N` | Maximum number of real bins per shard [1000] |
 | `--ibf-shard-dir DIR` | Directory for the shards and their `manifest.tsv` [next to the output] |
@@ -606,7 +637,7 @@ Let `O` be the value of `--output` (for example `results/run.tsv`).
 | `O` | every run | Main result table, one row per query |
 | `O.metrics.json` | every run | Settings, input checksums, aggregate counts, error rates, run time, peak memory |
 | `O.log`, `O.log.jsonl` | logging enabled | Human-readable log and one JSON event per line |
-| `O.ibf_tuning.json` | IBF modes | Planned/effective IBF design and FPR estimates (Section 9) |
+| `O.ibf_tuning.json` | IBF modes | Planned/effective IBF design and FPR estimates ([Section 9](#9-false-positive-and-error-rate-computation)) |
 | `O.per_bin.tsv` | per-bin screen enabled | Candidate summary per query |
 | `O.per_bin.tsv.candidates.tsv` | per-bin screen enabled | One row per candidate locus (contig, start, end, support, verification status) |
 | `O.bins.tsv` | `calibrate` mode | Per-bin occupancy and empirical FPR |
@@ -628,7 +659,7 @@ the event `run_completed`.
 | `valid_windows` | `N`, windows with only A/C/G/T (after repeat exclusion) |
 | `matched_windows` | Windows supported by the selected scoring method |
 | `recovery_fraction` | `matched_windows / valid_windows` |
-| `status` | Classification (Section 8.3) |
+| `status` | Classification ([Section 8.3](#83-classification)) |
 | `exact_global_recovery` | `E / N` (validate/calibrate/exact) |
 | `global_ibf_recovery` | `G / N` |
 | `per_bin_ibf_recovery` | `C / N` |
