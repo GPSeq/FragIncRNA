@@ -1,0 +1,88 @@
+# Doxygen configuration for FragIncRNA.
+# Configured by CMake; build with:  cmake --build build --target docs
+# Output: build/docs/html/index.html
+
+#---------------------------------------------------------------------------
+# Project
+#---------------------------------------------------------------------------
+PROJECT_NAME           = "FragIncRNA"
+PROJECT_BRIEF          = "k-mer recovery of lncRNA transcripts in reference genomes"
+OUTPUT_DIRECTORY       = @DOXYGEN_OUTPUT_DIR@
+STRIP_FROM_PATH        = @PROJECT_SOURCE_DIR@
+FULL_PATH_NAMES        = YES
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+TOC_INCLUDE_HEADINGS   = 3
+BUILTIN_STL_SUPPORT    = YES
+
+#---------------------------------------------------------------------------
+# What to extract
+#---------------------------------------------------------------------------
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_ANON_NSPACES   = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_LOCAL_CLASSES  = YES
+HIDE_UNDOC_MEMBERS     = NO
+SORT_MEMBER_DOCS       = NO
+
+#---------------------------------------------------------------------------
+# Input
+#---------------------------------------------------------------------------
+INPUT                  = @PROJECT_SOURCE_DIR@/README.md \
+                         @PROJECT_SOURCE_DIR@/docs/OUTPUT_REFERENCE.md \
+                         @PROJECT_SOURCE_DIR@/src
+FILE_PATTERNS          = *.hpp *.cpp *.md
+RECURSIVE              = NO
+USE_MDFILE_AS_MAINPAGE = @PROJECT_SOURCE_DIR@/README.md
+IMAGE_PATH             = @PROJECT_SOURCE_DIR@ @PROJECT_SOURCE_DIR@/img
+EXCLUDE_SYMBOLS        = std::* seqan3::* cereal::* \
+                         anonymous_namespace{kmer_v2.cpp}::IndexedReference anonymous_namespace{kmer_v2.cpp}::ReportStream anonymous_namespace{kmer_v2.cpp}::ShardDirectoryLock anonymous_namespace{kmer_v2.cpp}::ShardedIbf anonymous_namespace{kmer_v2.cpp}::TrustedArchive anonymous_namespace{kmer_v2.cpp}::WindowReport
+
+#---------------------------------------------------------------------------
+# Preprocessor
+#---------------------------------------------------------------------------
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+SEARCH_INCLUDES        = NO
+PREDEFINED             = LNCRNA_MERS_HAS_HIBF=1 _OPENMP=1
+
+#---------------------------------------------------------------------------
+# Warnings
+#---------------------------------------------------------------------------
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = NO
+
+#---------------------------------------------------------------------------
+# HTML output
+#---------------------------------------------------------------------------
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = NO
+HTML_COLORSTYLE        = AUTO_LIGHT
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = NO
+REFERENCES_RELATION    = NO
+SEARCHENGINE           = YES
+GENERATE_LATEX         = NO
+
+#---------------------------------------------------------------------------
+# Diagrams (used only when Graphviz 'dot' is installed)
+#---------------------------------------------------------------------------
+HAVE_DOT               = @DOXYGEN_HAVE_DOT@
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = NO
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = NO
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+DOT_GRAPH_MAX_NODES    = 40

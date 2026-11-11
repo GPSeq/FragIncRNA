@@ -1,7 +1,14 @@
 #pragma once
 
+/**
+ * @file window_report.hpp
+ * @brief Optional per-window TSV report and k-mer FASTA export.
+ */
 // Optional reports stream in original query/window order. No window-by-bin
 // matrix is retained. Both gzip and plain outputs are staged until success.
+/**
+ * @brief Output stream (plain or gzip) that is staged and only published on success.
+ */
 class ReportStream {
     fs::path final_, staged_;
     std::ofstream plain_;
@@ -38,6 +45,11 @@ public:
     }
 };
 
+/**
+ * @brief Percent-escapes characters that are not allowed in FASTA identifiers.
+ * @param text Raw identifier.
+ * @return Escaped identifier.
+ */
 std::string fasta_safe_id(std::string const & text) {
     std::ostringstream out;
     for (unsigned char c : text) {
@@ -47,6 +59,9 @@ std::string fasta_safe_id(std::string const & text) {
     return out.str();
 }
 
+/**
+ * @brief Writes `--window-output` (one row per query window) and `--kmer-fasta-output`.
+ */
 class WindowReport {
     Options const & o_;
     ReportStream table_, fasta_;

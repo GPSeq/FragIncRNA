@@ -1,5 +1,17 @@
 #pragma once
 
+/**
+ * @file sharded_validation.hpp
+ * @brief Per-bin false-positive / false-negative accounting for sharded indexes (validate/calibrate).
+ */
+/**
+ * @brief Accumulates per-bin false positives and false negatives of a sharded index against exact truth.
+ * @param o Options.
+ * @param batch Queries of the current batch.
+ * @param exact Exact whole-reference result for the batch.
+ * @param shards Sharded index.
+ * @param totals Run totals; bin_fp, bin_fn and bin_exact_present are updated.
+ */
 void compare_sharded_validation_bins(Options const & o, std::vector<Query> const & batch,
                                       ExactResult const & exact, ShardedIbf & shards, Totals & totals) {
     for (auto const & q : batch) for (auto const & [bin,hits] : q.per_bin_counts) totals.bin_fp[bin] += hits;

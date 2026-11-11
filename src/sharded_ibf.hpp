@@ -1,5 +1,9 @@
 #pragma once
 
+/**
+ * @file sharded_ibf.hpp
+ * @brief Sharded IBF layout: planning, building, persisting, validating and loading index shards.
+ */
 // Included after the v2 format-3 archive functions. Kept separate so physical
 // storage cannot accidentally introduce shard-local biological decisions.
 #include "trusted_archive.hpp"
@@ -8,6 +12,11 @@ double elapsed(Clock::time_point start);
 std::size_t peak_rss_bytes();
 double observed_ibf_union_estimate(Ibf const &, ReferenceInfo const &, Options const &);
 
+/**
+ * @brief Decides single vs. sharded layout and the number of bins per shard.
+ * @param o Options; layout fields are updated.
+ * @param info Inspected reference (bin count).
+ */
 void plan_shards(Options & o, ReferenceInfo const & info) {
     auto bits = planned_bin_bits(o.fragment_size,o.hash_functions,o.fpr);
     auto single = planned_index_bytes(info.bin_count,bits);
@@ -58,6 +67,11 @@ void sync_shard_directory(fs::path const & directory) {
 }
 
 // Atomic self-checksummed text records avoid a two-file manifest/checksum commit.
+/**
+ * @brief Atomically writes a self-checksummed text file (write temporary file, fsync, rename).
+ * @param path Destination file.
+ * @param text File content.
+ */
 void atomic_shard_text(fs::path const & path, std::string const & text) {
     auto temporary = unique_staging_path(path);
     try {
@@ -71,6 +85,9 @@ void atomic_shard_text(fs::path const & path, std::string const & text) {
     } catch (...) { std::error_code ignored; fs::remove(temporary,ignored); throw; }
 }
 
+/**
+ * @brief Exclusive OS lock on a shard directory; prevents concurrent modification by other runs.
+ */
 class ShardDirectoryLock {
     int fd_ = -1;
 public:
@@ -88,6 +105,12 @@ public:
     ShardDirectoryLock & operator=(ShardDirectoryLock const &) = delete;
 };
 
+/**
+ * @brief A reference index made of several independent flat IBF shards with global bin IDs.
+ * @details Shards are built, checksummed and recorded in `manifest.tsv`; they can be reused
+ * and resumed by later runs. In disk storage mode only one shard is resident at a time.
+ * Splitting bins into shards does not change membership results or false-positive rates.
+ */
 class ShardedIbf {
     struct Shard {
         std::size_t begin = 0, bins = 0, bytes = 0;

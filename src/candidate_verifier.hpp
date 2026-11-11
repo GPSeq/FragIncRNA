@@ -1,5 +1,15 @@
 #pragma once
 
+/**
+ * @file candidate_verifier.hpp
+ * @brief Exact verification of IBF candidate loci against the original reference sequence.
+ */
+/**
+ * @brief Exactly verifies the query windows inside the candidate loci of each query.
+ * @details Candidate intervals are read from the reference cache and every reference k-mer
+ * is compared to the query windows. The result is the verified support V used by
+ * `per_bin_verified` scoring; it contains no Bloom-filter false positives.
+ */
 void verify_candidate_intervals(Options const & o, ReferenceInfo const & info, RepeatBed const & reference_bed,
                                 std::vector<Query> const & batch, IndexedReference const & reference,
                                 ExactResult & result) {

@@ -1,5 +1,9 @@
 #pragma once
 
+/**
+ * @file config.hpp
+ * @brief Configuration types and TOML loader of the legacy executable `lncrna_mers`.
+ */
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -63,12 +67,10 @@ struct Config
     HIBFConfig hibf{};
 };
 
-/*
-* @fn load_config_from_toml
-* @brief Loads and validates application configuration from a TOML file.
-* @signature Config load_config_from_toml(std::filesystem::path const & config_path);
-* @param config_path: path to the TOML configuration file.
-* @throws std::runtime_error when the file cannot be opened or contains invalid configuration.
-* @return Parsed and validated configuration.
-*/
+/**
+ * @brief Loads and validates application configuration from a TOML file.
+ * @param config_path path to the TOML configuration file.
+ * @throws std::runtime_error when the file cannot be opened or contains invalid configuration.
+ * @return Parsed and validated configuration.
+ */
 Config load_config_from_toml(std::filesystem::path const & config_path);

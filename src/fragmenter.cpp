@@ -1,3 +1,8 @@
+/**
+ * @file fragmenter.cpp
+ * @brief Implementation of the legacy reference fragmenter.
+ */
+
 #include "fragmenter.hpp"
 
 #include "logger.hpp"

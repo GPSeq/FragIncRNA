@@ -1,3 +1,8 @@
+/**
+ * @file query_processor.cpp
+ * @brief Implementation of the legacy query processor.
+ */
+
 
 #include "query_processor.hpp"
 

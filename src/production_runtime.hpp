@@ -1,5 +1,9 @@
 #pragma once
 
+/**
+ * @file production_runtime.hpp
+ * @brief Runtime support for `lncrna_mers_v2`: signals, structured logging, worker and memory limits, OpenMP helpers.
+ */
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -27,7 +31,14 @@
 namespace fraglncrna {
 inline std::atomic<int> requested_signal{0};
 static_assert(std::atomic<int>::is_always_lock_free);
+/**
+ * @brief Signal handler: records SIGINT/SIGTERM so that the run can stop gracefully.
+ * @param signal Received signal number.
+ */
 inline void request_stop(int signal) { requested_signal.store(signal,std::memory_order_relaxed); }
+/**
+ * @brief Throws if a stop signal was received; called at safe points of the pipeline.
+ */
 inline void check_stop() {
     auto signal = requested_signal.load(std::memory_order_relaxed);
     if (signal) throw std::runtime_error("Run interrupted by signal " + std::to_string(signal));
@@ -44,6 +55,11 @@ inline std::string log_escape(std::string const & text) {
 
 // Coordinator/worker safe, bounded, flushed line-at-a-time logs. Scientific
 // output streams never pass through this class. No background writer to drain.
+/**
+ * @brief Structured run log written as text (`<output>.log`) and JSON lines (`<output>.log.jsonl`).
+ * @details Thread-safe, line-buffered and flushed after each event. Scientific output
+ * never passes through this class.
+ */
 class ProductionLog {
     std::mutex mutex_;
     std::mutex progress_mutex_;
@@ -121,6 +137,10 @@ public:
 
 inline ProductionLog production_log;
 
+/**
+ * @brief Number of CPUs usable by this process (CPU affinity and cgroup quota aware).
+ * @return Worker count >= 1.
+ */
 inline int available_workers() {
     int cpus = std::max(1u, std::thread::hardware_concurrency());
 #if defined(__linux__)
@@ -136,6 +156,10 @@ inline int available_workers() {
 }
 
 // Effective memory limit includes cgroup-constrained jobs, not just host RAM.
+/**
+ * @brief Effective memory limit: the smaller of physical RAM and the cgroup limit.
+ * @return Limit in bytes.
+ */
 inline std::size_t memory_limit_bytes() {
     auto physical = double(sysconf(_SC_PHYS_PAGES))*sysconf(_SC_PAGESIZE);
     auto limit = static_cast<std::size_t>(physical);
@@ -146,6 +170,12 @@ inline std::size_t memory_limit_bytes() {
     return limit;
 }
 
+/**
+ * @brief Runs @p function(i) for i in [0, count) with dynamic OpenMP scheduling (serial without OpenMP).
+ * @param count Number of records.
+ * @param workers Maximum number of threads.
+ * @param function Callable invoked once per record index.
+ */
 template <typename Function>
 void parallel_records(std::size_t count, [[maybe_unused]] int workers, Function function) {
     std::exception_ptr error;

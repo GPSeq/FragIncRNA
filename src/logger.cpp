@@ -1,3 +1,8 @@
+/**
+ * @file logger.cpp
+ * @brief Implementation of the legacy text logger.
+ */
+
 #include "logger.hpp"
 
 #include <chrono>

@@ -101,6 +101,28 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
     target_compile_options(lncrna_mers_lib PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# API documentation: cmake --build build --target docs  ->  build/docs/html/index.html
+option(LNCRNA_MERS_BUILD_DOCS "Add the 'docs' target (requires Doxygen)" ON)
+if (LNCRNA_MERS_BUILD_DOCS)
+    find_package(Doxygen OPTIONAL_COMPONENTS dot)
+    if (DOXYGEN_FOUND)
+        set(DOXYGEN_OUTPUT_DIR "${CMAKE_BINARY_DIR}/docs")
+        if (DOXYGEN_DOT_FOUND)
+            set(DOXYGEN_HAVE_DOT YES)
+        else()
+            set(DOXYGEN_HAVE_DOT NO)
+        endif()
+        configure_file("${CMAKE_SOURCE_DIR}/docs/Doxyfile.in" "${CMAKE_BINARY_DIR}/Doxyfile" @ONLY)
+        add_custom_target(docs
+            COMMAND Doxygen::doxygen "${CMAKE_BINARY_DIR}/Doxyfile"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "Generating API documentation in ${DOXYGEN_OUTPUT_DIR}/html"
+            VERBATIM)
+    else()
+        message(STATUS "Doxygen not found: 'docs' target disabled")
+    endif()
+endif()
+
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(lncrna_mers_lib PRIVATE -O3)
 endif()

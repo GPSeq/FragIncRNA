@@ -1,8 +1,17 @@
 #pragma once
 
+/**
+ * @file indexed_reference.hpp
+ * @brief Random-access cache of the original reference bases used for exact candidate verification.
+ */
 // Reusable random-access cache of original FASTA bases, including case/Ns.
 // Metadata remains in ReferenceInfo; contigs are never searched as a joined
 // sequence. Cache content is checked against the freshly inspected reference.
+/**
+ * @brief Binary cache of the original reference bases (one byte per base) with random access.
+ * @details Used to read candidate loci for exact verification. The cache is checksum-validated
+ * against the freshly inspected reference; contigs are never joined.
+ */
 class IndexedReference {
     fs::path path_, temporary_;
     bool ephemeral_ = false, reused_ = false;

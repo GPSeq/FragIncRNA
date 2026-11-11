@@ -1,3 +1,8 @@
+/**
+ * @file config.cpp
+ * @brief TOML parsing and validation for the legacy executable `lncrna_mers`.
+ */
+
 #include "config.hpp"
 
 #include <algorithm>

@@ -171,6 +171,21 @@ ctest --test-dir build --output-on-failure
 
 All tests use small synthetic data and finish within a few minutes.
 
+### 3.6 API documentation (Doxygen)
+
+The source code is documented with Doxygen. With Doxygen installed
+(`sudo apt install doxygen graphviz`), CMake provides a `docs` target:
+
+```bash
+cmake -S . -B build
+cmake --build build --target docs
+```
+
+Open `build/docs/html/index.html` in a browser. The documentation contains
+this README as start page, the complete output reference, and all classes,
+functions and source files. Graphviz (`dot`) is optional and adds class and
+include diagrams. Disable the target with `-DLNCRNA_MERS_BUILD_DOCS=OFF`.
+
 ---
 
 ## 4. Input data

@@ -1,3 +1,8 @@
+/**
+ * @file reference_index.cpp
+ * @brief Implementation of the legacy reference index.
+ */
+
 #include "reference_index.hpp"
 
 #include "logger.hpp"

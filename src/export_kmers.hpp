@@ -1,5 +1,14 @@
 #pragma once
 
+/**
+ * @file export_kmers.hpp
+ * @brief `--mode export-kmers`: export query k-mer windows without a reference.
+ */
+/**
+ * @brief `--mode export-kmers`: writes all query k-mer windows without a reference.
+ * @param o Options.
+ * @return 0 on success.
+ */
 int export_kmers(Options const & o) {
     std::signal(SIGTERM,fraglncrna::request_stop); std::signal(SIGINT,fraglncrna::request_stop);
     auto bed = load_repeat_bed(o.query_repeat_bed,o.max_repeat_intervals);

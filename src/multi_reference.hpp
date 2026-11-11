@@ -1,9 +1,18 @@
 #pragma once
 
+/**
+ * @file multi_reference.hpp
+ * @brief Directory mode: running `lncrna_mers_v2` for every assembly in a directory.
+ */
 std::string lower_ascii(std::string text) {
     for (char & c : text) if (c >= 'A' && c <= 'Z') c += 'a'-'A';
     return text;
 }
+/**
+ * @brief Reference ID of an assembly file: file name without FASTA/gzip extension, unsafe characters replaced.
+ * @param file Assembly FASTA path.
+ * @return Reference ID.
+ */
 std::string directory_reference_id(fs::path const & file) {
     auto name = file.filename().string(), lower = lower_ascii(name);
     for (auto const & suffix : {".fasta.gz",".fna.gz",".fa.gz",".fasta",".fna",".fa"})
@@ -22,6 +31,14 @@ std::string replace_token(std::string text, std::string const & token, std::stri
     return text;
 }
 
+/**
+ * @brief Runs the analysis for every assembly in `--reference-dir`.
+ * @details Each assembly is processed in a staged directory, sealed with a checksum ledger
+ * and published atomically to OUTPUT_DIR/REFERENCE_ID/kK/. Completed assemblies are skipped
+ * on restart.
+ * @param o Options.
+ * @return 0 on success, non-zero if any assembly failed.
+ */
 int run_reference_directory(Options const & o) {
     if (!o.save_index.empty() || !o.load_index.empty() || o.ibf_build_only || o.ibf_dry_run)
         throw std::runtime_error("Directory mode does not accept single save/load archives, build-only or dry-run; use --reference FILE");

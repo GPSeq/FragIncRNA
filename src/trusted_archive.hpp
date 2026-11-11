@@ -1,11 +1,20 @@
 #pragma once
 
+/**
+ * @file trusted_archive.hpp
+ * @brief Pinned, change-detecting read access to verified index shard files.
+ */
 // Pin the verified inode, not a later pathname open. Cryptography establishes
 // trust once; kernel identity/change stamps detect accidental external writes
 // afterwards (ctime as well as mtime, including nanoseconds). Each use checks
 // both the descriptor and current directory entry before and after reading.
 // This assumes an honest kernel/filesystem and no privileged timestamp forgery.
 // It is not a cryptographic defence against a malicious kernel or root writer.
+/**
+ * @brief Read access to a verified shard file pinned by file descriptor.
+ * @details After the SHA-256 check, file identity, size, mtime and ctime are re-checked before
+ * and after each use, so external modification or replacement is detected.
+ */
 class TrustedArchive {
     int fd_ = -1;
     fs::path path_;

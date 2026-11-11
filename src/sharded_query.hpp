@@ -1,5 +1,18 @@
 #pragma once
 
+/**
+ * @file sharded_query.hpp
+ * @brief Querying all IBF shards of a reference for one batch of queries.
+ */
+/**
+ * @brief Counts IBF hits per global bin for every query of @p batch across all shards.
+ * @details First pass: per-bin hit counts; global candidate selection; second pass:
+ * candidate-window support for the selected bins.
+ * @param shards Sharded index.
+ * @param batch Queries; hit counts and candidates are filled in.
+ * @param o Options.
+ * @param info Inspected reference.
+ */
 void query_shards(ShardedIbf & shards, std::vector<Query> & batch, Options const & o, ReferenceInfo const & info) {
     // Global H_b uses occurrence multiplicity; only membership work is deduplicated.
     auto phase = Clock::now();

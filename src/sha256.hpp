@@ -1,5 +1,9 @@
 #pragma once
 
+/**
+ * @file sha256.hpp
+ * @brief Self-contained streaming SHA-256 (FIPS 180-4) used for input provenance.
+ */
 // SHA-256 for streaming input provenance. The algorithm follows FIPS 180-4.
 #include <array>
 #include <bit>
@@ -11,6 +15,9 @@
 
 namespace fraglncrna
 {
+/**
+ * @brief Incremental SHA-256 hash (FIPS 180-4) for checksums of inputs, configs and indexes.
+ */
 class Sha256
 {
 public:

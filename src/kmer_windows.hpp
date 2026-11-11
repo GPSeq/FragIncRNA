@@ -1,5 +1,9 @@
 #pragma once
 
+/**
+ * @file kmer_windows.hpp
+ * @brief 2-bit DNA encoding and rolling forward/reverse-complement k-mer windows.
+ */
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +14,11 @@
 namespace fraglncrna
 {
 
+/**
+ * @brief 2-bit code of a nucleotide (A=0, C=1, G=2, T=3; case-insensitive).
+ * @param c Nucleotide character.
+ * @return Code 0-3, or -1 for any other character (e.g. N).
+ */
 inline int dna_code(char c) noexcept
 {
     switch (c)
@@ -22,6 +31,11 @@ inline int dna_code(char c) noexcept
     }
 }
 
+/**
+ * @brief One k-mer window in 2-bit encoding.
+ * @details @c forward is the k-mer, @c reverse its reverse complement; @c valid is false
+ * if the window contains a non-ACGT base.
+ */
 struct DnaWindow
 {
     std::uint64_t forward = 0;
@@ -31,6 +45,12 @@ struct DnaWindow
 };
 
 // Coordinates are preserved: an ambiguous base invalidates every overlapping window.
+/**
+ * @brief Rolling encoder producing one DnaWindow per input base once k bases are seen.
+ * @details Window positions are preserved: an ambiguous base invalidates every window
+ * that overlaps it instead of being skipped, so window indices match query coordinates.
+ * Supports 1 <= k <= 32.
+ */
 class RollingDnaWindow
 {
 public:

@@ -1,6 +1,17 @@
 #pragma once
 
-
+/**
+ * @file ibf_diagnostics.hpp
+ * @brief IBF design diagnostics and the `--ibf-auto-tune` report.
+ */
+/**
+ * @brief Computes the IBF design (bits per bin, index size, any-bin FPR) and writes the tuning report.
+ * @details Depending on `--ibf-auto-tune` and `--genome-fpr`, the effective per-bin FPR may be
+ * lowered to min(fpr, genome_fpr / (bins * lookup_orientations)).
+ * @param o Options; the effective FPR may be updated.
+ * @param info Inspected reference.
+ * @return Planned index size in bytes.
+ */
 double diagnose_ibf(Options & o, ReferenceInfo const & info) {
     using fraglncrna::production_log;
     production_log.event("ibf-diagnostics", "stage_started", "IBF SETTINGS DIAGNOSTICS scoring=" + o.scoring_method);

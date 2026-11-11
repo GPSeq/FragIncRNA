@@ -1,3 +1,18 @@
+/**
+ * @file kmer_v2.cpp
+ * @brief Main analysis program `lncrna_mers_v2`.
+ *
+ * Pipeline: parse options -> inspect reference -> build or load the (sharded)
+ * Interleaved Bloom Filter -> encode query k-mer windows -> count hits per bin
+ * -> select candidate loci -> verify candidates exactly -> score, classify and
+ * write the result TSV, sidecar reports, metrics JSON and logs.
+ *
+ * Most program components live in this translation unit. Several headers
+ * (`sharded_ibf.hpp`, `candidate_verifier.hpp`, `window_report.hpp`, ...) are
+ * included in the middle of this file and use its types (Options, Query,
+ * ReferenceInfo, ...); they are not stand-alone headers.
+ */
+
 // Version 2 analysis path. The historical executable and its TSV remain available.
 #include <seqan3/search/dream_index/interleaved_bloom_filter.hpp>
 #include "sha256.hpp"
@@ -51,6 +66,10 @@ using fraglncrna::planned_index_bytes;
 
 namespace
 {
+/**
+ * @brief All settings of one `lncrna_mers_v2` run (command line and TOML `[v2]`).
+ * @details Field names correspond to the TOML keys; see `lncrna_mers_v2 --help`.
+ */
 struct Options
 {
     fs::path reference, queries, output, metrics, config_path;
@@ -92,6 +111,11 @@ struct Options
     std::string evaluation_control_set, training_control_set, threshold_source = "cli";
 };
 
+/**
+ * @brief Reference ID: file name without the FASTA and `.gz` extension.
+ * @param path Reference FASTA.
+ * @return Reference ID.
+ */
 std::string reference_id_from_path(fs::path const & path)
 {
     std::string id = path.stem().string();
@@ -111,6 +135,10 @@ std::vector<std::string> split_tabs(std::string const & line)
     return fields;
 }
 
+/**
+ * @brief Loads basic/strict thresholds for the current reference and k from `--threshold-table`.
+ * @param o Options; thresholds are updated.
+ */
 void load_thresholds(Options & o)
 {
     if (o.threshold_table.empty()) return;
@@ -284,6 +312,11 @@ std::string parse_config_string(std::string const & key, std::string const & raw
     return result;
 }
 
+/**
+ * @brief Reads the `[v2]` section of a TOML file and converts it into command-line arguments.
+ * @param path TOML configuration file.
+ * @return Arguments such as `--k 20`, inserted before user arguments.
+ */
 std::vector<std::string> load_v2_config_args(fs::path const & path)
 {
     std::ifstream input(path);
@@ -406,6 +439,13 @@ std::vector<std::string> load_v2_config_args(fs::path const & path)
     return args;
 }
 
+/**
+ * @brief Parses and validates command-line options (after expanding `--config`).
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return Validated options.
+ * @throws std::runtime_error on invalid or conflicting options.
+ */
 Options parse_options(int argc, char ** argv)
 {
     Options o;
@@ -932,6 +972,9 @@ FALSE-POSITIVE RATES
 }
 
 // Buffered byte reader keeps memory independent of FASTA line or contig length.
+/**
+ * @brief Buffered reader for plain and gzip-compressed files.
+ */
 class ByteReader
 {
 public:
@@ -981,6 +1024,12 @@ private:
     std::size_t at_ = 0, length_ = 0;
 };
 
+/**
+ * @brief Streams a FASTA file base by base.
+ * @param path FASTA or FASTA.gz file.
+ * @param on_start Called with the ID of each record.
+ * @param on_base Called with (position, base) for every sequence character.
+ */
 template <typename OnStart, typename OnBase>
 void scan_fasta(fs::path const & path, OnStart on_start, OnBase on_base)
 {
@@ -1036,12 +1085,21 @@ void scan_fasta(fs::path const & path, OnStart on_start, OnBase on_base)
 constexpr uint32_t mixed_repeat_class = std::numeric_limits<uint32_t>::max();
 
 struct RepeatInterval { std::size_t start, end; uint32_t class_id; };
+/**
+ * @brief Repeat intervals from a BED3/4 file, grouped by sequence ID, with class names.
+ */
 struct RepeatBed
 {
     std::unordered_map<std::string, std::vector<RepeatInterval>> intervals;
     std::vector<std::string> classes{"NONE", "SOFTMASK"};
 };
 
+/**
+ * @brief Loads a repeat BED3/4 file (0-based, half-open).
+ * @param path BED file; empty path returns an empty set.
+ * @param max_intervals Maximum number of intervals.
+ * @return Repeat intervals.
+ */
 RepeatBed load_repeat_bed(fs::path const & path, std::size_t max_intervals)
 {
     RepeatBed bed;
@@ -1125,6 +1183,11 @@ private:
     std::size_t next_ = 0;
 };
 
+/**
+ * @brief One query or reference k-mer window.
+ * @details @c valid: usable for matching (ACGT only and not excluded as repeat);
+ * @c base_valid: ACGT only; @c repeat: overlaps a soft-masked or annotated repeat.
+ */
 struct Window
 {
     uint64_t forward = 0, reverse = 0;
@@ -1132,6 +1195,9 @@ struct Window
     uint32_t repeat_class = 0;
 };
 
+/**
+ * @brief Turns a base stream into Window objects, applying ambiguity and repeat policies.
+ */
 class WindowMaker
 {
 public:
@@ -1181,11 +1247,17 @@ private:
     uint64_t repeat_bits_ = 0;
 };
 
+/**
+ * @brief Key used for IBF insertion and lookup: canonical k-mer or forward k-mer, depending on `--strand`.
+ */
 uint64_t index_key(Window const & w, Options const & o)
 {
     return o.strand == "canonical" ? std::min(w.forward, w.reverse) : w.forward;
 }
 
+/**
+ * @brief Summary of an inspected reference: contigs, lengths, bins, base counts and checksums.
+ */
 struct ReferenceInfo
 {
     std::vector<std::string> ids;
@@ -1226,6 +1298,12 @@ std::size_t parse_coordinate(std::string const & value, std::string const & cont
     throw std::runtime_error("Invalid coordinate in " + context);
 }
 
+/**
+ * @brief Loads and validates the `--exon-blocks` TSV.
+ * @param o Options.
+ * @param info Inspected reference.
+ * @return Exon blocks per query.
+ */
 ExonBlocks load_exon_blocks(Options const & o, ReferenceInfo const & info)
 {
     ExonBlocks blocks;
@@ -1268,6 +1346,12 @@ ExonBlocks load_exon_blocks(Options const & o, ReferenceInfo const & info)
     return blocks;
 }
 
+/**
+ * @brief Loads and validates the `--expected-loci-bed` file (BED4/5).
+ * @param o Options.
+ * @param info Inspected reference.
+ * @return Expected loci per query.
+ */
 ExpectedLoci load_expected_loci(Options const & o, ReferenceInfo const & info)
 {
     ExpectedLoci loci;
@@ -1308,6 +1392,13 @@ ExpectedLoci load_expected_loci(Options const & o, ReferenceInfo const & info)
 
 #include "indexed_reference.hpp"
 
+/**
+ * @brief Reads the reference once: contigs, lengths, bins, masked/ambiguous bases and SHA-256.
+ * @param o Options.
+ * @param reference_bed Reference repeat annotation.
+ * @param cache Optional base cache to fill or validate.
+ * @return Reference summary.
+ */
 ReferenceInfo inspect_reference(Options const & o, RepeatBed const & reference_bed, IndexedReference * cache = nullptr)
 {
     ReferenceInfo info;
@@ -1401,6 +1492,9 @@ std::unique_ptr<Ibf> build_index(Options const & o, ReferenceInfo & info, Repeat
     return ibf;
 }
 
+/**
+ * @brief Settings and checksums stored with a saved IBF; used to reject incompatible indexes.
+ */
 struct IndexMetadata
 {
     uint32_t format_version = 3;
@@ -1489,6 +1583,9 @@ void check_index_metadata(IndexMetadata const & stored, IndexMetadata const & ex
 
 constexpr std::string_view index_magic = "FRAGLNCRNA-IBF3";
 
+/**
+ * @brief Saves a single-layout IBF archive with its metadata (staged write, then rename).
+ */
 void save_index_file(fs::path const & path, IndexMetadata const & meta, Ibf const & ibf)
 {
     fs::create_directories(path.parent_path().empty() ? fs::path{"."} : path.parent_path());
@@ -1531,6 +1628,10 @@ void save_index_file(fs::path const & path, IndexMetadata const & meta, Ibf cons
     }
 }
 
+/**
+ * @brief Checks that a saved IBF archive matches the current reference and settings.
+ * @throws std::runtime_error on any mismatch.
+ */
 IndexMetadata validate_index_archive(fs::path const & path, IndexMetadata const & expected,
                                      std::ifstream & input, bool verify_payload = true)
 {
@@ -1630,16 +1731,25 @@ void write_index_metadata_json(fs::path const & index_path, IndexMetadata const 
     if (!out) throw std::runtime_error("Failed writing index metadata");
 }
 
+/**
+ * @brief A reference bin selected as candidate for a query (bin ID, coordinates, IBF hits).
+ */
 struct PerBinCandidate
 {
     std::size_t bin = 0, contig = 0, start = 0, end = 0, hits = 0;
 };
 
+/**
+ * @brief A candidate locus: neighbouring candidate bins on one contig merged into one interval.
+ */
 struct PerBinRegion
 {
     std::size_t contig = 0, start = 0, end = 0, bins = 0, max_hits = 0, sum_hits = 0;
 };
 
+/**
+ * @brief One query transcript with its windows, IBF hit counts per bin and candidate loci.
+ */
 struct Query
 {
     std::string id, report_sequence;
@@ -1658,6 +1768,9 @@ struct Query
     std::size_t rejected_min_hits = 0, rejected_fraction = 0;
 };
 
+/**
+ * @brief One exact occurrence of a query window in the reference (contig, start, strand).
+ */
 struct Hit
 {
     std::size_t window = 0, contig = 0, start = 0;
@@ -1665,6 +1778,9 @@ struct Hit
     uint32_t reference_repeat_class = 0;
 };
 
+/**
+ * @brief Exact matching result for a batch: whole-reference truth and/or verified candidate support.
+ */
 struct ExactResult
 {
     std::unordered_set<uint64_t> found;
@@ -1682,6 +1798,9 @@ struct ExactResult
     std::size_t candidate_cache_hits = 0, candidate_cache_insertions = 0;
 };
 
+/**
+ * @brief Writes the `--positions` report (every exact hit), optionally gzip-compressed.
+ */
 class PositionWriter
 {
 public:
@@ -1737,6 +1856,9 @@ private:
 
 #include "window_report.hpp"
 
+/**
+ * @brief Number of IBF bins reporting the window (respects `--strand`).
+ */
 std::size_t count_bins(Ibf::membership_agent_type & agent, Window const & w, Options const & o)
 {
     auto const & first = agent.bulk_contains(index_key(w, o));
@@ -1748,6 +1870,9 @@ std::size_t count_bins(Ibf::membership_agent_type & agent, Window const & w, Opt
     return std::ranges::count(union_bins, true);
 }
 
+/**
+ * @brief IDs of all IBF bins reporting the window (respects `--strand`).
+ */
 std::vector<std::size_t> positive_bins(Ibf::membership_agent_type & agent, Window const & w, Options const & o)
 {
     auto const & first = agent.bulk_contains(index_key(w, o));
@@ -1763,6 +1888,10 @@ std::vector<std::size_t> positive_bins(Ibf::membership_agent_type & agent, Windo
     return bins;
 }
 
+/**
+ * @brief Encodes a query sequence into k-mer windows and, if an index is given, counts IBF hits.
+ * @return Prepared query.
+ */
 Query make_query(std::string id, std::size_t index, std::string const & sequence,
                  Options const & o, Ibf const * ibf, RepeatBed const & query_bed)
 {
@@ -1830,6 +1959,12 @@ Query make_query(std::string id, std::size_t index, std::string const & sequence
     return q;
 }
 
+/**
+ * @brief Per-bin candidate screen for one query.
+ * @details Keeps bins with H_b >= per_bin_min_hits and H_b / N >= per_bin_min_fraction,
+ * ranks them, keeps the top per_bin_top_k and merges bins closer than
+ * per_bin_max_locus_gap into candidate loci.
+ */
 void prepare_per_bin_query(Query & q, Options const & o, ReferenceInfo const & info, Ibf const * ibf)
 {
     if (!o.fdr_control_per_bin) return;
@@ -1922,6 +2057,10 @@ void prepare_per_bin_query(Query & q, Options const & o, ReferenceInfo const & i
 
 #include "sharded_query.hpp"
 
+/**
+ * @brief Exact scan of the whole reference for one query batch (ground truth E).
+ * @details Used by exact, validate and calibrate modes; one full reference pass per batch.
+ */
 ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed const & reference_bed,
                         std::vector<Query> const & batch)
 {
@@ -1987,6 +2126,9 @@ ExactResult exact_batch(Options const & o, ReferenceInfo const & info, RepeatBed
 
 #include "candidate_verifier.hpp"
 
+/**
+ * @brief True if the run writes result schema 3 (explicit scoring, layout or per-bin IBF production).
+ */
 bool schema3(Options const & o) { return o.layout_given || o.explicit_scoring || (o.mode == "ibf" && o.fdr_control_per_bin); }
 
 char const * global_budget_policy(Options const & o) {
@@ -1995,6 +2137,10 @@ char const * global_budget_policy(Options const & o) {
     return o.genome_fpr_given ? "requested_only" : "per_bin";
 }
 
+/**
+ * @brief Query status from matched and valid windows.
+ * @return NO_VALID_KMERS, NO_MATCH, PASS_STRICT, PASS_BASIC or LOW_SUPPORT.
+ */
 std::string classify(std::size_t matched, std::size_t valid, Options const & o) {
     if (!valid) return "NO_VALID_KMERS";
     if (!matched) return "NO_MATCH";
@@ -2026,6 +2172,9 @@ void write_real(std::ostream & out, double value) {
     out.flags(flags); out.precision(precision);
 }
 
+/**
+ * @brief Run-wide counters: windows, FP/FN, per-bin errors, candidate statistics and timings.
+ */
 struct Totals
 {
     std::size_t queries = 0, valid = 0, absent = 0, exact_positive = 0, fp = 0, fn = 0, matched = 0;
@@ -2066,6 +2215,9 @@ std::vector<std::size_t> exact_bins_for_window(Window const & w, Options const &
     return bins;
 }
 
+/**
+ * @brief Accumulates per-bin false positives and false negatives of a single IBF against exact truth.
+ */
 void compare_validation_bins(Options const & o, std::vector<Query> const & batch,
                              ExactResult const & exact, Ibf const & ibf, Totals & totals) {
     // H_b = TP_b + FP_b. Independent exact bin ownership gives true pairs;
@@ -2098,6 +2250,9 @@ void compare_validation_bins(Options const & o, std::vector<Query> const & batch
 
 #include "sharded_validation.hpp"
 
+/**
+ * @brief Best fixed and sliding reference region of a query (`--local-window`).
+ */
 struct LocalStats
 {
     std::size_t best = 0, regions = 0, contig = 0, start = 0, end = 0, multimapped = 0;
@@ -2164,6 +2319,9 @@ LocalStats local_stats(std::vector<Hit> const & hits, std::size_t window_count,
     return stats;
 }
 
+/**
+ * @brief A locus built by clustering exact hits (`--discover-loci`).
+ */
 struct LocusCandidate
 {
     std::size_t contig = 0, start = 0, end = 0, matched_windows = 0, occurrence_count = 0;
@@ -2251,6 +2409,9 @@ ExpectedStats expected_locus_stats(std::vector<Hit> const & hits, std::size_t qu
     return stats;
 }
 
+/**
+ * @brief Scores, classifies and writes the result rows (and sidecar rows) of one batch.
+ */
 void write_batch(std::ostream & out, Options const & o, std::string const & ref_id,
                  std::vector<Query> const & batch, ExactResult const & exact_result,
                  ReferenceInfo const & info, PositionWriter & position_writer, Totals & totals,
@@ -2641,6 +2802,9 @@ void write_batch(std::ostream & out, Options const & o, std::string const & ref_
     }
 }
 
+/**
+ * @brief Peak resident memory of this process in bytes.
+ */
 std::size_t peak_rss_bytes()
 {
     rusage usage{};
@@ -2654,6 +2818,9 @@ std::size_t peak_rss_bytes()
 
 double elapsed(Clock::time_point start) { return std::chrono::duration<double>(Clock::now() - start).count(); }
 
+/**
+ * @brief Writes the `--fragments` report with the coordinates of every reference bin.
+ */
 void write_fragments(fs::path const & path, Options const & o, ReferenceInfo const & info, bool indexed)
 {
     if (path.empty()) return;
@@ -2678,6 +2845,10 @@ void write_fragments(fs::path const & path, Options const & o, ReferenceInfo con
     if (!out) throw std::runtime_error("Failed writing fragment coordinates");
 }
 
+/**
+ * @brief Any-bin false-positive estimate from the actual bit occupancy of the built IBF.
+ * @details Sum over bins of (occupied_bits / bin_bits)^h, capped at 1.
+ */
 double observed_ibf_union_estimate(Ibf const & ibf, ReferenceInfo const & info, Options const & o)
 {
     std::size_t technical_bins = ibf.raw_data().size() / info.bin_bits;
@@ -2703,6 +2874,11 @@ double observed_ibf_union_estimate(Ibf const & ibf, ReferenceInfo const & info, 
     return std::min(1.0, estimate);
 }
 
+/**
+ * @brief Runs the complete analysis for one reference.
+ * @param o Options.
+ * @return Process exit code.
+ */
 int run(Options o)
 {
     auto run_start = Clock::now();
@@ -3537,6 +3713,10 @@ int run(Options o)
 #include "export_kmers.hpp"
 } // namespace
 
+/**
+ * @brief Entry point of `lncrna_mers_v2`: parses options and dispatches to single-reference,
+ * directory or export-kmers mode.
+ */
 int main(int argc, char ** argv)
 {
     try {
