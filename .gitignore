@@ -1,5 +1,3 @@
-kmer_results/ibf_new/qc/plots/kmer_qc_edge_cases.tsv
-kmer_results/ibf_new/qc/kmer_transcript_pass_counts_by_k.tsv
 build/
 build-production*/
 rerun_test/

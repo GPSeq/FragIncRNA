@@ -447,50 +447,205 @@ Options parse_options(int argc, char ** argv)
     for (std::size_t i = 1; i < args.size(); ++i)
     {
         std::string key = args[i];
-        if (key == "--help")
+        if (key == "--help" || key == "-h")
         {
-            std::cout << "Usage: lncrna_mers_v2 [--config FILE.toml] --reference REF.fa[.gz] "
-                         "--queries Q.fa[.gz] --output OUT.tsv "
-                         "[--k 15] [--mode ibf|exact|validate|calibrate] [--strand canonical|forward|both] "
-                         "[--ambiguity skip|error] [--repeat include|exclude|annotate] "
-                         "[--reference-repeat-bed REF.bed] [--query-repeat-bed QUERY.bed] "
-                         "[--mask-target query|reference|both] [--repeat-classes OUT.tsv] "
-                         "[--reference-hit-classes OUT.tsv] [--fragments OUT.tsv] "
-                         "[--max-repeat-intervals 5000000] "
-                         "[--exon-blocks BLOCKS.tsv] [--max-exon-blocks 1000000] "
-                         "[--discover-loci OUT.tsv --locus-gap 8000 --max-locus-span 1000000] "
-                         "[--max-locus-rows 100000] [--expected-loci-bed BED4/5] "
-                         "[--expected-loci-output OUT.tsv] [--max-expected-loci 1000000] "
-                         "[--max-query-bases 50000000] "
-                         "[--fragment-size 8000] [--fpr 0.01] [--genome-fpr 0.01] [--hash-functions 3] "
-                         "[--batch-windows 100000] [--basic-threshold 0.75] [--strict-threshold 0.85] "
-                         "[--threshold-table TABLE.tsv --evaluation-control-set LABEL] "
-                         "[--local-window BASES] [--positions OUT.tsv[.gz]] [--max-position-rows 1000000] "
-                         "[--calibration-bins OUT.tsv] [--max-calibration-pairs 10000000] "
-                         "[--max-ibf-bin-pairs 10000000] "
-                         "[--fdr-control-per-bin | --no-fdr-control-per-bin] "
-                         "[--per-bin-min-hits 2] [--per-bin-min-fraction 0.05] "
-                         "[--per-bin-top-k 64] [--per-bin-max-locus-gap 50000] "
-                         "[--per-bin-exact-verify | --no-per-bin-exact-verify] "
-                         "[--per-bin-output OUT.tsv] "
-                         "[--ibf-layout sharded|single|auto] [--max-bins-per-ibf 1000] "
-                         "[--ibf-shard-dir DIRECTORY] [--ibf-shard-storage disk|memory] "
-                         "[--ibf-shard-retention keep|cleanup_on_success] "
-                         "[--ibf-shard-reuse | --no-ibf-shard-reuse] [--ibf-resume | --no-ibf-resume] [--ibf-build-only] "
-                         "[--save-index INDEX.ibf | --load-index INDEX.ibf] "
-                         "[--metrics OUT.json] [--scoring-method global_ibf|per_bin_ibf|per_bin_verified|global_exact] "
-                         "[--reference-dir DIR --output-dir DIR] [--output-name-template results.tsv] "
-                         "[--reference-recursive] [--continue-on-reference-error] "
-                         "[--window-output FILE.tsv[.gz]] [--window-scope all|verified|candidate|failed] "
-                         "[--window-query-ids FILE] [--window-include-sequence] [--kmer-fasta-output FILE.fa[.gz]] "
-                         "[--max-window-rows 10000000] [--ibf-shard-cache-mb 128] [--reference-page-cache-mb 64] "
-                         "[--mode export-kmers --queries FILE --window-output FILE] "
-                         "[--threads 1] [--reference-cache BASES.bin] "
-                         "[--ibf-auto-tune off|recommend|apply] [--ibf-max-index-memory-gb 0] "
-                         "[--ibf-fail-on-unsafe-settings] [--ibf-dry-run] [--ibf-tuning-report FILE.json] "
-                         "[--log-file FILE] [--log-level trace|debug|info|warning|error|off] "
-                         "[--no-log-to-console] [--progress-interval-seconds 10] "
-                         "[--progress-every-queries 1000] [--log-per-query] [--log-per-bin]\n";
+            std::cout << R"HELP(lncrna_mers_v2 - k-mer recovery of lncRNA transcripts in reference genomes
+
+USAGE
+  lncrna_mers_v2 --reference GENOME.fa[.gz] --queries LNCRNA.fa[.gz] --output OUT.tsv [OPTIONS]
+  lncrna_mers_v2 --reference-dir GENOMES/ --queries LNCRNA.fa --output-dir RESULTS/ [OPTIONS]
+  lncrna_mers_v2 --config FILE.toml [OPTIONS]
+
+  Every option can also be set in the [v2] section of a TOML file, using
+  underscores instead of dashes (e.g. fragment_size = 80000). Options given
+  after --config override the file. Relative paths are resolved from the
+  current working directory. Default values are shown in [brackets].
+
+EXAMPLE (recommended production run)
+  lncrna_mers_v2 --reference genome.fa.gz --queries lncRNA.fa --output res/k20.tsv \
+      --mode ibf --scoring-method per_bin_verified --k 20 --fragment-size 80000 \
+      --ibf-shard-dir indexes/genome_k20 --threads 8
+
+INPUT / OUTPUT
+  --config FILE              TOML configuration file ([v2] section).
+  --reference FILE           Reference assembly, FASTA or gzipped FASTA. One file = one assembly.
+  --reference-dir DIR        Analyse every .fa/.fasta/.fna[.gz] file in DIR as a separate assembly.
+                             Replaces --reference; requires --output-dir.
+  --reference-recursive      Also search sub-directories of --reference-dir. [off]
+  --reference-id ID          Explicit assembly ID. [file name without FASTA/gzip extension]
+  --continue-on-reference-error
+                             In directory mode, continue with the next assembly after a failure
+                             (exit status is still non-zero). [off]
+  --queries FILE             Query transcripts (lncRNAs), FASTA or gzipped FASTA.
+  --output FILE              Main result table, one row per query.
+  --output-dir DIR           Output root for directory mode; results are written to
+                             DIR/<REFERENCE_ID>/k<K>/<name>.
+  --output-name-template NAME
+                             Result file name in directory mode; may contain {reference_id}
+                             and {k}. [results.tsv]
+  --metrics FILE             Run metrics JSON (settings, checksums, timings, memory, error rates).
+                             [<output>.metrics.json]
+
+K-MER AND FRAGMENT SETTINGS
+  --k N                      k-mer length, 1-32. [15]
+  --fragment-size N          Reference bin length in bases. Each IBF bin holds one fragment. [8000]
+  --strand MODE              canonical : a k-mer and its reverse complement are identical
+                             forward   : query orientation only
+                             both      : test both orientations separately           [canonical]
+  --ambiguity MODE           skip  : ignore windows containing non-ACGT bases (e.g. N)
+                             error : stop if such a window is found                  [skip]
+
+ANALYSIS MODE AND SCORING
+  --mode MODE                exact       : exact scan of the whole reference, no IBF
+                             ibf         : IBF screening (production mode)
+                             validate    : IBF plus independent exact scan; reports all methods
+                             calibrate   : like validate, plus per-bin FPR (--calibration-bins)
+                             export-kmers: write query k-mers only (needs --window-output)
+                                                                                    [validate]
+  --scoring-method METHOD    Evidence used for the primary score (recovery = matched / valid windows):
+                             per_bin_verified : candidate loci verified exactly (recommended)
+                             per_bin_ibf      : windows hitting selected candidate bins (approximate)
+                             global_ibf       : windows hitting any IBF bin (approximate)
+                             global_exact     : exact occurrence anywhere in the reference
+  --basic-threshold X        Minimum recovery fraction for PASS_BASIC. [0.75]
+  --strict-threshold X       Minimum recovery fraction for PASS_STRICT. [0.85]
+  --threshold-table FILE     TSV with per reference/k thresholds (columns: reference_id, k,
+                             basic_threshold, strict_threshold, training_control_set).
+                             Overrides the two thresholds above.
+  --evaluation-control-set LABEL
+                             Label of the evaluation set; required with --threshold-table.
+
+  Query status: NO_VALID_KMERS (no valid window), NO_MATCH (nothing matched),
+  PASS_STRICT (>= strict), PASS_BASIC (>= basic), LOW_SUPPORT (otherwise).
+
+INTERLEAVED BLOOM FILTER (IBF)
+  --hash-functions N         Number of hash functions, 1-5. [3]
+  --fpr X                    Target false-positive rate of ONE bin, 0 < X <= 0.5. Determines the
+                             bits per bin: m = -h*n / ln(1 - X^(1/h)), n = fragment size. [0.01]
+  --genome-fpr X             Target false-positive rate over ALL bins (any-bin hit). With
+                             global_ibf scoring the per-bin FPR is lowered to X / bins. [0.01]
+  --ibf-layout LAYOUT        sharded : several independent IBFs (recommended for genomes)
+                             single  : one IBF (required for --save-index/--load-index)
+                             auto    : choose by bin count and memory          [sharded]
+  --max-bins-per-ibf N       Maximum number of bins per shard. [1000]
+  --ibf-shard-dir DIR        Directory for index shards and manifest.tsv. [next to the output]
+  --ibf-shard-storage MODE   disk   : load one shard at a time (low memory)
+                             memory : keep all shards in memory                [disk]
+  --ibf-shard-retention MODE keep               : keep shards for later re-use
+                             cleanup_on_success : delete shards built by this run on success
+                                                                                    [keep]
+  --ibf-shard-reuse | --no-ibf-shard-reuse
+                             Re-use compatible shards from earlier runs. [on]
+  --ibf-resume | --no-ibf-resume
+                             Rebuild missing or damaged shards and continue. [on]
+  --ibf-build-only           Build and validate the index, then exit without querying. [off]
+  --save-index FILE          Save a single-layout IBF archive.
+  --load-index FILE          Load a single-layout IBF archive (must match all settings).
+  --ibf-shard-cache-mb N     Memory for cached shards in MiB; 0 disables. [128]
+  --ibf-local-cache-dir DIR  Optional verified local copy of shards stored on slow/network disks.
+  --ibf-local-cache-max-mb N Size limit of that local copy in MiB. [8192]
+  --ibf-auto-tune MODE       off       : no diagnosis
+                             recommend : report recommended settings only
+                             apply     : may lower the per-bin FPR for global_ibf  [recommend]
+  --ibf-tuning-report FILE   IBF design and FPR estimates. [<output>.ibf_tuning.json]
+  --ibf-max-index-memory-gb X
+                             Refuse indexes whose bit vectors exceed X GB (not total RAM). 0 = no
+                             limit. [0]
+  --ibf-fail-on-unsafe-settings
+                             Stop instead of warning when IBF settings are flagged as unsafe.
+  --ibf-dry-run              Only report the planned index size and settings; no results.
+
+CANDIDATE SCREENING AND EXACT VERIFICATION
+  --fdr-control-per-bin | --no-fdr-control-per-bin
+                             Enable the per-bin candidate screen. Historical name: this is NOT
+                             statistical FDR control.
+  --per-bin-min-hits N       Minimum query windows that must hit a bin. [2]
+  --per-bin-min-fraction X   Minimum fraction of the query's valid windows hitting a bin. [0.05]
+  --per-bin-top-k N          Maximum number of candidate bins kept per query. [64]
+  --per-bin-max-locus-gap N  Merge candidate bins on the same contig closer than N bases. [50000]
+  --per-bin-exact-verify | --no-per-bin-exact-verify
+                             Check candidate loci exactly against the reference. [on]
+  --per-bin-output FILE      Per-query candidate summary; candidate loci are written to
+                             FILE.candidates.tsv. [<output>.per_bin.tsv]
+  --candidate-prefilter | --no-candidate-prefilter
+                             Fast pre-check before exact lookups; never changes results. [on]
+  --reference-cache FILE     Re-usable binary copy of the reference bases used for verification.
+                             [temporary file, removed at exit]
+  --reference-page-cache-mb N
+                             Memory for cached reference pages in MiB; 0 disables. [64]
+
+REPEATS
+  --repeat POLICY            include  : use all windows
+                             exclude  : drop windows overlapping masked/annotated repeats
+                             annotate : use all windows and report recovery per repeat class
+                                                                                    [include]
+  --mask-target SIDE         Where 'exclude' applies: query, reference or both. [both]
+  --reference-repeat-bed FILE
+                             Reference repeats, BED3/4 (contig start end [class]). Lower-case
+                             (soft-masked) bases are always treated as repeats.
+  --query-repeat-bed FILE    Query repeats, BED3/4 (query_id start end [class]).
+  --repeat-classes FILE      Query recovery per repeat class (with --repeat annotate).
+  --reference-hit-classes FILE
+                             Repeat classes of the exact reference hits (with --repeat annotate).
+  --max-repeat-intervals N   Maximum BED intervals read. [5000000]
+
+OPTIONAL REPORTS (exact-capable modes: exact, validate, calibrate)
+  --fragments FILE           Coordinates of every reference bin.
+  --positions FILE[.gz]      Every exact hit position (can be very large).
+  --max-position-rows N      Maximum exact hit rows per batch; exceeding it stops the run.
+                             [1000000]
+  --local-window N           Report the best-supported N-base reference region per query. [off]
+  --discover-loci FILE       Cluster exact hits into ranked loci.
+  --locus-gap N              Maximum gap between hits of one locus. [8000]
+  --max-locus-span N         Maximum length of one locus. [1000000]
+  --max-locus-rows N         Maximum number of locus rows. [100000]
+  --expected-loci-bed FILE   Expected loci, BED4/5 (contig start end query_id [label]); adds
+                             recovery inside these loci.
+  --expected-loci-output FILE
+                             Expected-locus report. [<output>.expected_loci.tsv]
+  --max-expected-loci N      Maximum expected-locus intervals. [1000000]
+  --exon-blocks FILE         Exon alignment blocks (TSV: query_id query_start query_end contig
+                             ref_start ref_end strand); adds exon-aware recovery columns.
+  --max-exon-blocks N        Maximum exon blocks. [1000000]
+  --calibration-bins FILE    Per-bin occupancy and empirical FPR (calibrate mode).
+                             [<output>.bins.tsv]
+  --max-calibration-pairs N  Maximum stored window/bin pairs in calibration. [10000000]
+
+WINDOW / K-MER EXPORT
+  --window-output FILE[.gz]  One row per query k-mer window with its IBF/verification status.
+  --window-scope SCOPE       all | verified | candidate | failed. [all]
+  --window-query-ids FILE    Only write windows of the listed query IDs (one per line).
+  --window-include-sequence  Add the k-mer sequence to each window row. [off]
+  --kmer-fasta-output FILE[.gz]
+                             Write valid query k-mers as FASTA.
+  --max-window-rows N        Maximum window rows; exceeding it stops the run. [10000000]
+
+RESOURCES
+  --threads N                Worker threads (overrides OMP_NUM_THREADS). [1]
+  --batch-windows N          Query windows processed per batch. Exact modes rescan the reference
+                             once per batch. [100000]
+  --max-query-bases N        Maximum total query bases. [50000000]
+  --max-ibf-bin-pairs N      Maximum stored IBF window/bin pairs per batch. [10000000]
+
+LOGGING
+  --log-file FILE            Text log; a JSON-lines copy is written to FILE.jsonl. [<output>.log]
+  --log-level LEVEL          trace | debug | info | warning | error | off. [info]
+  --log-to-console | --no-log-to-console
+                             Also print log messages to the terminal. [on]
+  --progress-interval-seconds N
+                             Seconds between progress messages. [10]
+  --progress-every-queries N Queries between progress messages. [1000]
+  --log-per-query            Log every query (slow, very large logs). [off]
+  --log-per-bin              Log every candidate bin (slow, very large logs). [off]
+
+  -h, --help                 Show this help and exit.
+
+FALSE-POSITIVE RATES
+  Design:   per-bin FPR = --fpr; any-bin FPR over B bins ~ 1 - (1 - fpr)^B.
+  Measured (validate/calibrate, against the exact scan):
+            FPR = FP / (FP + TN),  false-negative rate = FN / exact-positive windows.
+  per_bin_verified scores contain no Bloom-filter false positives.
+)HELP";
             std::exit(0);
         }
         if (key == "--candidate-prefilter") { o.candidate_prefilter = true; continue; }
