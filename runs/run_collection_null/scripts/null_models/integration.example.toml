@@ -1,0 +1,36 @@
+# Example only: replace paths and k. Do not launch a grid from this template.
+[v2]
+reference = "/path/to/target_assembly.fa.gz"
+queries = "/path/to/generated/fasta/real_lncrna_5000.fa.gz"
+output = "/path/to/results/assembly_k20_real.tsv"
+mode = "ibf"
+scoring_method = "per_bin_verified"
+k = 20
+hash_functions = 3
+fpr = 0.01
+strand = "canonical"
+ambiguity = "skip"
+fragment_size = 80000
+threads = 15
+fdr_control_per_bin = true
+per_bin_min_hits = 2
+per_bin_min_fraction = 0.02
+per_bin_top_k = 256
+per_bin_exact_verify = true
+basic_threshold = 0.75
+strict_threshold = 0.85
+ibf_layout = "sharded"
+max_bins_per_ibf = 1000
+# Same path for all query classes with the same reference/k/hash/mask settings.
+ibf_shard_dir = "/path/to/cache/ASSEMBLY_k20_h3_reference_repeats_included"
+ibf_shard_storage = "disk"
+ibf_shard_retention = "keep"
+ibf_shard_reuse = true
+ibf_resume = true
+ibf_build_only = false
+# For query masking, choose the already N-masked FASTA; skip handles its Ns.
+repeat = "include"
+reference_repeat_bed = ""
+query_repeat_bed = ""
+batch_windows = 500000
+max_query_bases = 50000000

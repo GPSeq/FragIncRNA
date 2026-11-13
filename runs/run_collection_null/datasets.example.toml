@@ -1,0 +1,14 @@
+# Paths resolve from this manifest's directory. Replace counts/paths as needed.
+# The supplied generated_3000 collection has 2,999 coding controls, explicitly recorded.
+[datasets]
+real_lncrna = "../generated_3000/fasta/real_lncrna_3000.fa.gz"
+dinuc_shuffled = "../generated_3000/fasta/dinuc_shuffled_30000.fa.gz"
+intergenic_matched = "../generated_3000/fasta/intergenic_matched_3000.fa.gz"
+coding_matched = "../generated_3000/fasta/coding_matched_2999.fa.gz"
+repeat_masked_lncrna = "../generated_3000/fasta/real_lncrna_3000_repeat_masked.fa.gz"
+
+[metadata]
+control_metadata = "../generated_3000/metadata/query_metadata.tsv.gz"
+shuffled_parent_map = "../generated_3000/metadata/shuffled_parent_map.tsv.gz"
+valid_windows = "../generated_3000/metadata/per_query_valid_windows.tsv.gz"
+source_manifest = "../generated_3000/provenance/run_manifest.json"
