@@ -1,0 +1,67 @@
+# FragIncRNA v2 whole-reference exact k-mer membership grid.
+# run_fraglncrna_grid_exact.py overrides inputs, output paths, k and threads.
+# Python 3.11+; run from the FragIncRNA repository root.
+[v2]
+reference = "genome.fa"
+queries = "queries.fa"
+output = "exact.tsv"
+metrics = ""
+
+mode = "exact"
+scoring_method = "global_exact"
+k = 20
+strand = "canonical"
+ambiguity = "skip"
+fragment_size = 80000
+fragments = ""
+threads = 1
+
+# Exact mode scans the whole reference independently; no Bloom filter is built.
+fdr_control_per_bin = false
+save_index = ""
+load_index = ""
+
+basic_threshold = 0.75
+strict_threshold = 0.85
+threshold_table = ""
+evaluation_control_set = ""
+
+repeat = "include"
+mask_target = "both"
+reference_repeat_bed = ""
+query_repeat_bed = ""
+repeat_classes = ""
+reference_hit_classes = ""
+max_repeat_intervals = 5000000
+
+# Optional reports disabled. For a custom template, set a report path to enable
+# it; the runner redirects enabled reports into each job's results directory.
+positions = ""
+max_position_rows = 1000000
+discover_loci = ""
+locus_gap = 8000
+max_locus_span = 1000000
+max_locus_rows = 100000
+expected_loci_bed = ""
+expected_loci_output = ""
+max_expected_loci = 1000000
+exon_blocks = ""
+max_exon_blocks = 1000000
+# To enable local concentration metrics, uncomment a value >= the largest k:
+# local_window = 8000
+
+# Each query batch rescans the reference. Larger batches trade memory for fewer
+# scans. progress_every_queries ALSO caps batch size in this tool.
+batch_windows = 500000
+max_query_bases = 50000000
+reference_cache = ""
+
+# Whole-reference exact scans are serial; use --parallel-genomes for concurrency.
+log_file = ""
+log_level = "info"
+log_to_console = true
+log_per_query = false
+log_per_bin = false
+progress_interval_seconds = 10
+progress_every_queries = 1000
+

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run FragIncRNA v2 sequentially for genome FASTAs × k=15..32 × hashes=3,4.
+"""Run FragIncRNA v2 with bounded genome concurrency for genome FASTAs × k=15..32 × hashes=3,4.
 
 Python >= 3.11, standard library only. One independent, provenance-checked
 .tar.gz per successful run. IBF shard caches live INSIDE the private per-job
@@ -12,9 +12,11 @@ Run from your FragIncRNA repository root. Use --dry-run first.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -24,6 +26,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import threading
 import tomllib
 
 FASTA_SUFFIXES = (
@@ -219,28 +222,32 @@ def completion_receipt_valid(archive: Path, receipt_file: Path, job_signature: s
     return True
 
 
-def run_executable(binary: Path, config: Path, cwd: Path, log_file: Path) -> int:
-    argv = [str(binary), "--config", str(config)]
-    print("$ " + " ".join(argv), flush=True)
+def run_executable(binary: Path, config: Path, cwd: Path, log_file: Path,
+                   stop: threading.Event) -> int:
+    # Write directly to the private executable log: concurrent output must not mix.
     with log_file.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
-            argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", bufsize=1,
-            start_new_session=True,
+            [str(binary), "--config", str(config)], cwd=cwd,
+            stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
         )
-        try:
-            assert process.stdout is not None
-            for line in process.stdout:
-                log.write(line)
-                print(line, end="", flush=True)
-            return process.wait()
-        except KeyboardInterrupt:
+        while True:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            raise
+                return process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                if stop.is_set():
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.wait()
+                    raise RuntimeError("Run cancelled; work/logs preserved")
 
 
 def main() -> int:
@@ -249,6 +256,7 @@ def main() -> int:
     parser.add_argument("--queries", type=Path, required=True, help="lncRNA query FASTA")
     parser.add_argument("--output-dir", type=Path, required=True, help="All archives and transient IBF caches go here")
     parser.add_argument("--threads", type=int, required=True, help="OpenMP threads per run")
+    parser.add_argument("--parallel-genomes", type=int, default=11, help="Maximum genomes processed simultaneously; --threads applies to EACH genome")
     parser.add_argument("--binary", type=Path, default=Path("build/lncrna_mers_v2"))
     parser.add_argument("--template", type=Path, default=Path(__file__).with_name("default.toml"))
     parser.add_argument("--k-min", type=int, default=15)
@@ -260,6 +268,8 @@ def main() -> int:
     parser.add_argument("--continue-on-error", action="store_true", help="Proceed to next job on failure; preserves failed job folder")
     args = parser.parse_args()
 
+    if args.parallel_genomes <= 0:
+        parser.error("--parallel-genomes must be positive")
     if args.threads <= 0:
         parser.error("--threads must be positive")
     if args.k_min < 1 or args.k_max > 32 or args.k_min > args.k_max:
@@ -300,11 +310,12 @@ def main() -> int:
     })
     del check
     available = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
-    if args.threads > available:
-        print(f"[WARN] Requested {args.threads} threads; only {available} CPUs in current affinity", file=sys.stderr)
+    requested_threads = args.threads * min(args.parallel_genomes, len(genomes))
+    if requested_threads > available:
+        print(f"[WARN] Requested up to {requested_threads} total threads; only {available} CPUs in current affinity", file=sys.stderr)
     n_total = len(genomes) * (args.k_max - args.k_min + 1) * len(args.hash_functions)
     print(f"[PLAN] genomes={len(genomes)} k={args.k_min}..{args.k_max} hashes={args.hash_functions} "
-          f"runs={n_total} threads={args.threads} output={output_root}", flush=True)
+          f"runs={n_total} threads_per_genome={args.threads} parallel_genomes={args.parallel_genomes} output={output_root}", flush=True)
     if args.dry_run:
         for g in genomes:
             print(f"  {g.name} => {slug_for(g)} ({(args.k_max - args.k_min + 1)*len(args.hash_functions)} runs)")
@@ -312,17 +323,71 @@ def main() -> int:
         return 0
 
     output_root.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("fraglncrna.grid")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    formatter = logging.Formatter("%(asctime)sZ %(levelname)s %(message)s")
+    formatter.converter = time.gmtime
+    file_handler = logging.FileHandler(output_root / "runner.log", encoding="utf-8")
+    console_handler = logging.StreamHandler(sys.stdout)
+    for handler in (file_handler, console_handler):
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    try:
+        return run_grid(args, genomes, source, binary, queries, template_file,
+                        output_root, repo_cwd, n_total, logger)
+    finally:
+        for handler in (file_handler, console_handler):
+            logger.removeHandler(handler)
+            handler.close()
+
+
+def run_grid(args, genomes, source, binary, queries, template_file,
+             output_root, repo_cwd, n_total, logger) -> int:
+    logger.info("[PLAN] genomes=%d parallel_genomes=%d threads_per_genome=%d total_jobs=%d k=%d..%d hashes=%s output=%s",
+                len(genomes), args.parallel_genomes, args.threads, n_total,
+                args.k_min, args.k_max, args.hash_functions, output_root)
+    for genome in genomes:
+        logger.info("[FOUND GENOME] %s => %s", genome, slug_for(genome))
+    logger.info("[PROVENANCE] Hashing executable and queries")
     template_sha = hashlib.sha256(source.encode("utf-8")).hexdigest()
     executable_sha = sha256_file(binary)
     queries_sha = sha256_file(queries)
-    attempted = 0
-    successes = 0
-    failures = 0
-    skipped = 0
+    attempted = successes = failures = skipped = 0
+    state_lock = threading.Lock()
+    stop = threading.Event()
+    running = {}
 
-    for genome in genomes:
+    def log_running():
+        # Caller holds state_lock, so each snapshot is coherent.
+        logger.info("[RUNNING] %d genome(s) simultaneously; genomes=%s",
+                    len(running), ", ".join(f"{name} ({job})" for name, job in sorted(running.items())) or "none")
+
+    def run_genome(genome):
+        nonlocal attempted, successes, failures, skipped
+        if stop.is_set():
+            return
         genome_slug = slug_for(genome)
-        print(f"[GENOME] {genome.name}: hashing reference for provenance", flush=True)
+        existing = any((output_root / folder / genome_slug).exists() for folder in ("archives", "_work"))
+        logger.info("[%s GENOME] %s; checking each requested hash/k completion",
+                    "RESUME" if existing else "NEW", genome.name)
+        try:
+            process_genome(genome, genome_slug)
+        except Exception:
+            with state_lock:
+                failures += 1
+                if not args.continue_on_error:
+                    stop.set()
+            logger.exception("[GENOME ERROR] %s", genome.name)
+        finally:
+            with state_lock:
+                running.pop(genome.name, None)
+                log_running()
+            logger.info("[GENOME END] %s", genome.name)
+
+    def process_genome(genome, genome_slug):
+        nonlocal attempted, successes, failures, skipped
+        logger.info("[GENOME] %s: hashing reference for provenance", genome.name)
         genome_sha = sha256_file(genome)
         for hashes in args.hash_functions:
             for k in range(args.k_min, args.k_max + 1):
@@ -345,21 +410,30 @@ def main() -> int:
                     json.dumps(provenance, sort_keys=True).encode("utf-8")
                 ).hexdigest()
                 job = {**provenance, "job_signature": job_signature}
-                if completion_receipt_valid(archive, receipt_path, job_signature):
-                    print(f"[SKIP COMPLETE] {label}", flush=True)
-                    skipped += 1
-                    continue
-                if args.max_runs and attempted >= args.max_runs:
-                    print(f"[STOP] --max-runs={args.max_runs} reached", flush=True)
-                    print(f"[SUMMARY] success={successes} skipped={skipped} failed={failures}")
-                    return 1 if failures else 0
-                attempted += 1
-                print(f"\n[START {attempted}] {label} at {iso_now()}", flush=True)
+                if stop.is_set():
+                    return
                 try:
+                    if completion_receipt_valid(archive, receipt_path, job_signature):
+                        logger.info("[SKIP COMPLETE] %s", label)
+                        with state_lock:
+                            skipped += 1
+                        continue
+                    with state_lock:
+                        if stop.is_set():
+                            return
+                        if args.max_runs and attempted >= args.max_runs:
+                            logger.info("[LIMIT] --max-runs=%d reached; no new jobs for %s", args.max_runs, genome.name)
+                            return
+                        attempted += 1
+                        attempt = attempted
+                        running[genome.name] = f"hash{hashes}/k{k}"
+                        log_running()
+                    logger.info("[START %d] %s; executable_log=%s", attempt, label, results_dir / "fraglncrna.log")
                     if work_dir.exists():
                         prior_job = work_dir / "job.json"
                         if not prior_job.exists() or json.loads(prior_job.read_text(encoding="utf-8")).get("job_signature") != job_signature:
                             raise RuntimeError(f"Work dir exists for different/unknown job; refusing overwrite: {work_dir}")
+                        logger.info("[RETRY] %s: reusing compatible cache and rerunning partial results", label)
                         # Reuse only the compatible shard cache. Remove any partial result files.
                         if results_dir.exists():
                             shutil.rmtree(results_dir)
@@ -378,7 +452,7 @@ def main() -> int:
                     write_json(work_dir / "job.json", job)
                     t0 = time.monotonic()
                     rc = run_executable(binary, work_dir / "generated_config.toml", repo_cwd,
-                                        results_dir / "fraglncrna.log")
+                                        results_dir / "fraglncrna.log", stop)
                     elapsed = time.monotonic() - t0
                     if rc != 0:
                         raise RuntimeError(f"FragIncRNA exited {rc}; preserved logs/cache at {work_dir}")
@@ -394,18 +468,38 @@ def main() -> int:
                     write_json(receipt_path, receipt)
                     if not args.keep_work:
                         shutil.rmtree(work_dir)
-                    successes += 1
-                    print(f"[COMPLETE] {label} time={elapsed:.1f}s archive={archive} "
-                          f"size={receipt['archive_bytes']/1024**2:.1f} MiB; IBFs removed", flush=True)
+                    with state_lock:
+                        successes += 1
+                    logger.info("[COMPLETE] %s time=%.1fs archive=%s size=%.1f MiB; IBFs removed",
+                                label, elapsed, archive, receipt['archive_bytes']/1024**2)
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-                    failures += 1
-                    print(f"[ERROR] {label}: {exc}", file=sys.stderr, flush=True)
-                    print(f"[PRESERVED] {work_dir} (inspect or rerun; never use partial outputs)", file=sys.stderr)
+                    with state_lock:
+                        failures += 1
+                        if not args.continue_on_error:
+                            stop.set()
+                    logger.error("[ERROR] %s: %s", label, exc)
+                    logger.error("[PRESERVED] %s (inspect or rerun; never use partial outputs)", work_dir)
                     if not args.continue_on_error:
-                        print(f"[SUMMARY] success={successes} skipped={skipped} failed={failures}")
-                        return 1
+                        return
+                finally:
+                    with state_lock:
+                        if genome.name in running:
+                            running.pop(genome.name)
+                            log_running()
 
-    print(f"\n[SUMMARY] total={n_total} success={successes} skipped={skipped} failed={failures}")
+    executor = ThreadPoolExecutor(max_workers=args.parallel_genomes)
+    try:
+        futures = [executor.submit(run_genome, genome) for genome in genomes]
+        for future in futures:
+            future.result()
+    except KeyboardInterrupt:
+        stop.set()
+        logger.warning("[INTERRUPTED] Stopping active executables; completed archives and work retained")
+        raise
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    logger.info("[SUMMARY] total=%d attempted=%d success=%d skipped=%d failed=%d",
+                n_total, attempted, successes, skipped, failures)
     return 1 if failures else 0
 
 
